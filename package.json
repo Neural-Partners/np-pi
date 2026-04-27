@@ -1,0 +1,27 @@
+{
+  "name": "np-pi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Neural Partners Pi packages, extensions, skills, prompts, and themes.",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "verify": "npm run verify --if-present --workspaces && npm run typecheck --if-present --workspaces && npm run test --if-present --workspaces && npm run lint --if-present --workspaces && npm run format:check",
+    "test": "npm run test --if-present --workspaces",
+    "typecheck": "npm run typecheck --if-present --workspaces",
+    "lint": "npm run lint --if-present --workspaces",
+    "format:check": "prettier --check \"**/*.{md,json,yml,yaml}\"",
+    "format": "prettier --write \"**/*.{md,json,yml,yaml}\"",
+    "clean": "git clean -fdX"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

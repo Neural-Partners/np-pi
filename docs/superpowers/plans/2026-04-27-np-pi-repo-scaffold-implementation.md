@@ -34,6 +34,7 @@ Create or modify only repo-level scaffold files. Do not edit files under `packag
 ### Task 1: Add root workspace tooling
 
 **Files:**
+
 - Create: `package.json`
 - Create: `tsconfig.base.json`
 - Create: `.gitignore`
@@ -117,11 +118,9 @@ Write `package.json` exactly as:
   "description": "Neural Partners Pi packages, extensions, skills, prompts, and themes.",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "scripts": {
-    "verify": "npm run typecheck --if-present --workspaces && npm run test --if-present --workspaces && npm run lint --if-present --workspaces && npm run format:check",
+    "verify": "npm run verify --if-present --workspaces && npm run typecheck --if-present --workspaces && npm run test --if-present --workspaces && npm run lint --if-present --workspaces && npm run format:check",
     "test": "npm run test --if-present --workspaces",
     "typecheck": "npm run typecheck --if-present --workspaces",
     "lint": "npm run lint --if-present --workspaces",
@@ -148,9 +147,7 @@ Write `tsconfig.base.json` exactly as:
   "$schema": "https://json.schemastore.org/tsconfig",
   "compilerOptions": {
     "target": "ES2022",
-    "lib": [
-      "ES2022"
-    ],
+    "lib": ["ES2022"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -195,6 +192,7 @@ Expected: command exits with code `0` and prints nothing.
 ### Task 2: Add repository docs and directory placeholders
 
 **Files:**
+
 - Create: `README.md`
 - Create: `LICENSE`
 - Create: `docs/pi-packages.md`
@@ -207,7 +205,7 @@ Expected: command exits with code `0` and prints nothing.
 
 Write `README.md` exactly as:
 
-```markdown
+````markdown
 # np-pi
 
 Neural Partners' public home for Pi packages, extensions, skills, prompts, themes, and related tooling.
@@ -221,8 +219,8 @@ Neural Partners' public home for Pi packages, extensions, skills, prompts, theme
 
 ## Current public packages
 
-| Package | Purpose | Install |
-| --- | --- | --- |
+| Package                 | Purpose                                              | Install                                |
+| ----------------------- | ---------------------------------------------------- | -------------------------------------- |
 | `@neuralpartners/pi-yo` | Trusted-local inter-session messaging for Pi agents. | `pi install npm:@neuralpartners/pi-yo` |
 
 See each package's README for package-specific usage, license, and verification details.
@@ -235,6 +233,7 @@ Use Node.js 22+ and npm workspaces.
 npm install
 npm run verify
 ```
+````
 
 Root verification runs workspace checks where packages define them, then checks Markdown/JSON/YAML formatting with Prettier.
 
@@ -259,7 +258,8 @@ Tokens must come from AWS SSM Parameter Store or local environment variables. Ne
 ## License
 
 This repo is a container for multiple packages. Package-level `package.json` and `LICENSE` files govern package code. See [`LICENSE`](LICENSE) for the repo-level licensing note.
-```
+
+````
 
 - [ ] **Step 2: Create root `LICENSE`**
 
@@ -273,13 +273,13 @@ This repository is a container for multiple Neural Partners Pi packages and supp
 Package-specific license terms are declared by each package's package.json and LICENSE file. If a package or file does not declare separate license terms, all rights are reserved by Neural Partners unless Neural Partners grants a separate written license.
 
 Commercial use of Neural Partners source-available packages may require a separate commercial license. See the relevant package README for details.
-```
+````
 
 - [ ] **Step 3: Create `docs/pi-packages.md`**
 
 Write `docs/pi-packages.md` exactly as:
 
-```markdown
+````markdown
 # Pi Package Conventions
 
 This repo follows Pi's package conventions for sharing extensions, skills, prompt templates, and themes through npm or git.
@@ -305,6 +305,7 @@ Add the `pi-package` keyword to publishable Pi packages:
   "keywords": ["pi-package"]
 }
 ```
+````
 
 Use the `pi` manifest when explicit resource paths are clearer than discovery by convention:
 
@@ -388,7 +389,8 @@ Descriptions matter because Pi uses them to decide when to load the skill.
 ## Local and private work
 
 Use `local/` for personal experiments and `private/` for internal/customer-specific work. Both directories are gitignored except for README placeholders.
-```
+
+````
 
 - [ ] **Step 4: Create `docs/publishing.md`**
 
@@ -420,7 +422,7 @@ export NPM_TOKEN="$(aws ssm get-parameter \
   --with-decryption \
   --query Parameter.Value \
   --output text)"
-```
+````
 
 Then use the environment token directly or copy `.npmrc.example` to a local `.npmrc` file. `.npmrc` is gitignored.
 
@@ -458,7 +460,8 @@ Before publishing:
 ## GitHub Actions publishing
 
 CI publishing is intentionally not configured yet. Add release automation only after release policy is explicit.
-```
+
+````
 
 - [ ] **Step 5: Create `packages/README.md`**
 
@@ -474,7 +477,7 @@ Each package should include its own README, tests, package manifest, and package
 Current package:
 
 - `pi-yo` — trusted-local inter-session messaging for Pi agents.
-```
+````
 
 - [ ] **Step 6: Create `local/README.md`**
 
@@ -515,6 +518,7 @@ Expected: command exits with code `0` and prints nothing.
 ### Task 3: Add CI workflow
 
 **Files:**
+
 - Create: `.github/workflows/ci.yml`
 
 - [ ] **Step 1: Create CI workflow**
@@ -569,6 +573,7 @@ Expected: command exits with code `0` and prints nothing.
 ### Task 4: Generate lockfile, verify, and commit
 
 **Files:**
+
 - Create: `package-lock.json`
 - Modify: files from Tasks 1-3 only if formatting requires it
 
@@ -597,7 +602,7 @@ npm run verify
 Expected:
 
 - workspace scripts run without missing-script failures
-- `@neuralpartners/pi-yo` package tests pass if its workspace is present
+- `@neuralpartners/pi-yo` package `verify` and `test` scripts pass if its workspace is present
 - Prettier check passes
 
 - [ ] **Step 3: Confirm no secrets or accidental package edits**
@@ -607,7 +612,7 @@ Run:
 ```bash
 git status --short
 git diff -- packages/pi-yo || true
-grep -RInE "(ghp_|npm_[A-Za-z0-9]|//registry\.npmjs\.org/:_authToken=([A-Za-z0-9_-]+))" . --exclude-dir=.git --exclude-dir=node_modules || true
+grep -RInE "(ghp_|npm_[A-Za-z0-9]|//registry\.npmjs\.org/:_authToken=([A-Za-z0-9_-]+))" . --exclude-dir=.git --exclude-dir=node_modules --exclude='2026-04-27-np-pi-repo-scaffold-implementation.md' || true
 ```
 
 Expected:

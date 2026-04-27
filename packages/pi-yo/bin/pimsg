@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+/**
+ * pimsg — send a message to a Pi/pi-bridge session from anywhere
+ *
+ * Usage:
+ *   pimsg list                          List all active Pi sessions
+ *   pimsg <target> <message...>         Send a message to a session
+ *   pimsg --reply <target> <message...> Send a reply (no further reply expected)
+ *
+ * <target> can be a session name, PID, or working directory basename.
+ */
+
+"use strict";
+
+const path = require("node:path");
+const core = require("../lib/pi-bridge-core.js");
+
+function die(msg, code = 1) {
+  process.stderr.write(msg + "\n");
+  process.exit(code);
+}
+
+function focusSupacodeTab(session) {
+  core.openSupacodeTab(session);
+}
+
+function safeText(value, maxBytes = 500) {
+  return core.sanitizeMetadata(value, maxBytes);
+}
+
+function safeSession(session) {
+  return core.sanitizeSessionForDisplay(session);
+}
+
+function printHelp() {
+  console.log([
+    "Usage:",
+    "  pimsg list                         List all active Pi sessions",
+    "  pimsg <target> <message...>        Send a message to a session",
+    "  pimsg --reply <target> <message..> Send a reply (no further reply expected)",
+    "  pimsg doctor [--fix]              Inspect or repair pi-bridge IPC permissions",
+    "",
+    "<target> can be a session name, PID, or working directory basename.",
+    "Ambiguous fuzzy targets fail closed and print candidate sessions.",
+    "",
+    "Examples:",
+    "  pimsg list",
+    '  pimsg backend "what does the auth endpoint return?"',
+    "  pimsg --reply backend here is what I found",
+    "  pimsg 83421 deploying now, heads up",
+  ].join("\n"));
+}
+
+function listSessions() {
+  const sessions = core.activeSessions();
+  const myCwd = process.cwd();
+
+  const color = process.stdout.isTTY && !process.env.NO_COLOR;
+  const RESET = color ? "\x1b[0m" : "";
+  const BOLD = color ? "\x1b[1m" : "";
+  const DIM = color ? "\x1b[2m" : "";
+  const CYAN = color ? "\x1b[96m" : "";
+
+  if (sessions.length === 0) {
+    console.log("No active Pi sessions found.");
+    return;
+  }
+
+  console.log("Active Pi sessions:");
+  for (const rawSession of sessions) {
+    const session = safeSession(rawSession);
+    const age = Math.round((Date.now() - rawSession.startedAt) / 60_000);
+    const isCurrent = rawSession.cwd === myCwd;
+    const bullet = isCurrent ? `${CYAN}${BOLD}▶${RESET}` : " •";
+    const label = isCurrent ? `  ${CYAN}${DIM}← you${RESET}` : "";
+    const nameStr = isCurrent
+      ? `${CYAN}${BOLD}${session.name.padEnd(20)}${RESET}`
+      : session.name.padEnd(20);
+    const pidStr = isCurrent
+      ? `${CYAN}${BOLD}pid:${String(rawSession.pid).padEnd(7)}${RESET}`
+      : `pid:${String(rawSession.pid).padEnd(7)}`;
+    const sc = session.supacodeTabId ? `  [💻 ${session.supacodeTabId.slice(0, 8)}]` : "";
+    console.log(`  ${bullet} ${nameStr} ${pidStr} ${session.cwd}  (${age}m ago)${sc}${label}`);
+  }
+
+  const duplicates = core.duplicateCwdWarnings(sessions);
+  if (duplicates.length > 0) {
+    console.log("\n⚠️ Duplicate cwd sessions detected — target canonical PID/name explicitly:");
+    for (const duplicate of duplicates) console.log(`  - ${duplicate}`);
+  }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+    printHelp();
+    return;
+  }
+
+  if (args[0] === "list") {
+    listSessions();
+    return;
+  }
+
+  if (args[0] === "doctor") {
+    const fix = args.includes("--fix");
+    const result = core.doctorIpcPermissions({
+      fix,
+      extraFiles: [
+        path.join(require("node:os").homedir(), ".pi", "agent", "bridge-roster.json"),
+        path.join(require("node:os").homedir(), ".pi", "agent", "tool-usage.jsonl"),
+      ],
+    });
+    if (result.findings.length === 0) {
+      console.log(`✓ pi-bridge IPC permissions OK (${result.ipcDir})`);
+    } else {
+      console.log(`${fix ? "✓ Fixed" : "⚠️ Found"} ${result.findings.length} permission issue(s):`);
+      for (const finding of result.findings) {
+        console.log(`  ${finding.path} ${finding.actualMode.toString(8)} -> ${finding.expectedMode.toString(8)}${fix ? " fixed" : ""}`);
+      }
+      if (!fix) console.log("Run: pimsg doctor --fix");
+    }
+    return;
+  }
+
+  let isReply = false;
+  let sendArgs = args;
+  if (args[0] === "--reply" || args[0] === "-r") {
+    isReply = true;
+    sendArgs = args.slice(1);
+  }
+
+  const target = sendArgs[0];
+  const messageText = sendArgs.slice(1).join(" ").trim();
+
+  if (!target || !messageText) {
+    die("Usage: pimsg <target> <message...>\n       pimsg --reply <target> <message...>\n       pimsg list");
+  }
+
+  const sessions = core.activeSessions();
+  const resolution = core.resolveSessionTarget(target, sessions);
+
+  if (resolution.status === "ambiguous") {
+    die(
+      `Ambiguous session target "${safeText(target, 200)}" matched multiple sessions by ${resolution.matchKind}.\n` +
+      `Candidates:\n  ${core.formatCandidateList(resolution.candidates)}`,
+    );
+  }
+
+  if (resolution.status !== "found") {
+    die(
+      `Session "${safeText(target, 200)}" not found.\n` +
+      `Available:\n  ${core.formatCandidateList(sessions)}`,
+    );
+  }
+
+  const session = resolution.session;
+  const fromName = path.basename(process.cwd());
+  const message = {
+    id: core.newMessageId(isReply ? "reply" : "msg"),
+    type: "message",
+    fromPid: process.pid,
+    fromName,
+    fromCwd: process.cwd(),
+    content: messageText,
+    timestamp: Date.now(),
+    isReply,
+  };
+
+  const verb = isReply ? "Reply sent" : "Sent";
+
+  try {
+    const receipt = await core.sendToSocket(session.socketPath, message);
+    focusSupacodeTab(session);
+    const safe = safeSession(session);
+    const sc = safe.supacodeTabId ? " — focused their tab" : "";
+    const ack = receipt.acked ? " — ACK received" : ` — delivered, but ${receipt.warning}`;
+    console.log(`✓ ${verb} to "${safe.name}" (${safe.cwd})${sc}${ack}`);
+  } catch (err) {
+    die(`✗ Failed to deliver to "${safeSession(session).name}": ${err.message}`);
+  }
+}
+
+main().catch((err) => die(err && err.stack ? err.stack : String(err)));

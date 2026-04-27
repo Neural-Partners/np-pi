@@ -1,0 +1,303 @@
+#!/usr/bin/env node
+/**
+ * pi-cc-bridge — Connects Claude Code (or any non-Pi session) to the pi-bridge network
+ *
+ * Starts a background socket server for the current working directory, registers
+ * it in the shared pi-bridge registry, and writes incoming messages to a mailbox
+ * file that Claude Code (or any agent) can read with a bash tool call.
+ *
+ * Usage:
+ *   pi-cc-bridge             Start the bridge for the current directory (daemonizes)
+ *   pi-cc-bridge start       Same as above
+ *   pi-cc-bridge status      Show whether the bridge is running
+ *   pi-cc-bridge mailbox     Print and clear the mailbox (new messages since last read)
+ *   pi-cc-bridge stop        Stop the bridge for the current directory
+ */
+
+"use strict";
+
+const net = require("node:net");
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
+const core = require("../lib/pi-bridge-core.js");
+
+// ─── Config ──────────────────────────────────────────────────────────────────
+
+const IPC_DIR = core.DEFAULT_PATHS.ipcDir;
+const REGISTRY_FILE = core.DEFAULT_PATHS.registryFile;
+
+const cwd = process.cwd();
+const cwdHash = crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 8);
+const name = path.basename(cwd) + " (CC)";
+
+const PID_FILE = path.join(IPC_DIR, `cc-${cwdHash}.pid`);
+const SOCKET_FILE = path.join(IPC_DIR, `cc-${cwdHash}.sock`);
+const MAILBOX_FILE = path.join(IPC_DIR, `cc-${cwdHash}.mailbox`);
+const META_FILE = path.join(IPC_DIR, `cc-${cwdHash}.json`);
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function ensureIpcDir() {
+  core.ensureIpcDir(IPC_DIR);
+}
+
+function readPid() {
+  try { return parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10); }
+  catch { return null; }
+}
+
+function daemonRunning() {
+  const pid = readPid();
+  return pid !== null && core.isExpectedDaemonProcess(pid, { metadataFile: META_FILE, cwd, scriptPath: __filename });
+}
+
+function secureWrite(file, content) {
+  core.secureWriteFile(file, content);
+}
+
+function ensureSecureFile(file) {
+  if (!fs.existsSync(file)) secureWrite(file, "");
+  else core.appendFileSecure(file, "");
+  core.chmodSafe(file, 0o600);
+}
+
+function die(msg, code = 1) {
+  process.stderr.write(msg + "\n");
+  process.exit(code);
+}
+
+function socketResponse(type, msg) {
+  return core.createSocketResponse(type, msg, {
+    fromPid: process.pid,
+    fromName: name,
+    fromCwd: cwd,
+  });
+}
+
+function writeSocketResponse(socket, response) {
+  try {
+    socket.write(JSON.stringify(response) + "\n", "utf-8");
+  } catch {
+    // Best effort. The sender still has socket write success/failure.
+  }
+}
+
+// ─── Commands ─────────────────────────────────────────────────────────────────
+
+function mailboxCount() {
+  try {
+    const content = fs.readFileSync(MAILBOX_FILE, "utf-8").trim();
+    return content ? (content.match(/^---$/gm) || []).length : 0;
+  } catch { return 0; }
+}
+
+function cmdStatus() {
+  if (daemonRunning()) {
+    const pid = readPid();
+    console.log(`✓ pi-cc-bridge is running  pid:${pid}  cwd:${cwd}`);
+    const msgs = mailboxCount();
+    if (msgs > 0) console.log(`  ${msgs} unread message(s) — run: pi-cc-bridge mailbox`);
+  } else {
+    console.log(`✗ pi-cc-bridge is NOT running for: ${cwd}`);
+    console.log("  Run: pi-cc-bridge start");
+  }
+}
+
+function cmdMailbox() {
+  ensureIpcDir();
+  try {
+    const content = core.readAndClearFileAtomic(MAILBOX_FILE).trim();
+    if (!content) {
+      console.log("(no new messages)");
+    } else {
+      console.log(content);
+    }
+  } catch {
+    console.log("(no new messages)");
+  }
+}
+
+function cmdStop() {
+  const pid = readPid();
+  if (!pid || !core.isProcessAlive(pid)) {
+    console.log("pi-cc-bridge is not running.");
+    return;
+  }
+  if (!core.isExpectedDaemonProcess(pid, { metadataFile: META_FILE, cwd, scriptPath: __filename })) {
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    try { fs.unlinkSync(META_FILE); } catch {}
+    console.log(`Removed stale/unverified pi-cc-bridge pid file for pid:${pid}; did not kill process.`);
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+    console.log(`Stopped pi-cc-bridge (pid:${pid})`);
+  } catch (e) {
+    die(`Failed to stop: ${e.message}`);
+  }
+}
+
+// ─── Daemon ──────────────────────────────────────────────────────────────────
+
+function appendToMailbox(msg) {
+  ensureIpcDir();
+  ensureSecureFile(MAILBOX_FILE);
+
+  const ts = new Date(msg.timestamp).toLocaleString();
+  const sender = msg.fromName !== path.basename(msg.fromCwd)
+    ? `${msg.fromName} @ ${path.basename(msg.fromCwd)}`
+    : msg.fromName;
+  const isReply = msg.isReply === true;
+
+  // For original messages, append a reply hint so CC knows to respond.
+  // For replies, omit the hint — the exchange is complete, no further reply expected.
+  const replyHint = isReply
+    ? `_This is a reply — no further reply needed._`
+    : `_Reply with: pimsg --reply "${msg.fromName}" <your reply>_`;
+
+  const entry = [
+    `---`,
+    `📨 From: ${sender}  |  ${ts}${isReply ? "  (reply)" : ""}`,
+    ``,
+    msg.content,
+    ``,
+    replyHint,
+    ``,
+  ].join("\n");
+
+  core.appendFileSecure(MAILBOX_FILE, entry);
+}
+
+function runDaemon() {
+  ensureIpcDir();
+
+  secureWrite(PID_FILE, String(process.pid));
+  core.writePidMetadata(META_FILE, { pid: process.pid, cwd, scriptPath: __filename, socketPath: SOCKET_FILE });
+
+  try { fs.unlinkSync(SOCKET_FILE); } catch {}
+
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      const collected = core.collectJsonLines(buffer, chunk.toString("utf-8"));
+      if (collected.overflow) {
+        socket.destroy();
+        return;
+      }
+      buffer = collected.buffer;
+      for (const line of collected.lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const parsed = JSON.parse(trimmed);
+          const validation = core.validateBridgeMessage(parsed);
+          if (!validation.ok) continue;
+          const msg = validation.value;
+          if (msg.type === "message") {
+            appendToMailbox(msg);
+            writeSocketResponse(socket, socketResponse("ack", msg));
+          } else if (msg.type === "ping") {
+            writeSocketResponse(socket, socketResponse("pong", msg));
+          }
+        } catch {
+          // Malformed messages are ignored.
+        }
+      }
+    });
+    socket.on("error", () => {});
+  });
+
+  server.listen(SOCKET_FILE, () => {
+    core.chmodSafe(SOCKET_FILE, 0o600);
+    core.registerSession({
+      pid: process.pid,
+      name,
+      cwd,
+      socketPath: SOCKET_FILE,
+      startedAt: Date.now(),
+      ...(process.env.SUPACODE_TAB_ID && {
+        supacodeTabId: process.env.SUPACODE_TAB_ID,
+        supacodeWorktreeId: process.env.SUPACODE_WORKTREE_ID,
+        supacodeSurfaceId: process.env.SUPACODE_SURFACE_ID,
+      }),
+    }, REGISTRY_FILE);
+  });
+
+  function cleanup() {
+    core.unregisterSession(process.pid, REGISTRY_FILE);
+    server.close();
+    try { fs.unlinkSync(SOCKET_FILE); } catch {}
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    try { fs.unlinkSync(META_FILE); } catch {}
+    process.exit(0);
+  }
+
+  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", cleanup);
+  process.on("exit", () => {
+    core.unregisterSession(process.pid, REGISTRY_FILE);
+    try { fs.unlinkSync(SOCKET_FILE); } catch {}
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    try { fs.unlinkSync(META_FILE); } catch {}
+  });
+}
+
+// ─── Start (daemonize) ───────────────────────────────────────────────────────
+
+function cmdStart() {
+  if (daemonRunning()) {
+    console.log(`pi-cc-bridge already running for: ${cwd}  (pid:${readPid()})`);
+    return;
+  }
+
+  if (process.env.__PI_CC_BRIDGE_DAEMON === "1") {
+    runDaemon();
+    return;
+  }
+
+  ensureIpcDir();
+  const logFile = path.join(IPC_DIR, `cc-${cwdHash}.log`);
+  const out = core.openSecureFile(logFile, "append");
+  core.chmodSafe(logFile, 0o600);
+
+  const child = spawn(process.execPath, [__filename, "start"], {
+    cwd,
+    env: { ...process.env, __PI_CC_BRIDGE_DAEMON: "1" },
+    detached: true,
+    stdio: ["ignore", out, out],
+  });
+  child.unref();
+
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const pid = readPid();
+    if (pid && core.isProcessAlive(pid)) {
+      console.log(`✓ pi-cc-bridge started  pid:${pid}  cwd:${cwd}`);
+      console.log(`  Mailbox: ${MAILBOX_FILE}`);
+      console.log(`  Others can reach you as: "${name}"`);
+      return;
+    }
+    const until = Date.now() + 50;
+    while (Date.now() < until) {}
+  }
+
+  console.log(`pi-cc-bridge started (pid:${child.pid}) — check ${logFile} if issues arise`);
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+if (process.env.__PI_CC_BRIDGE_DAEMON === "1") {
+  runDaemon();
+} else {
+  const cmd = process.argv[2] || "start";
+  switch (cmd) {
+    case "start": cmdStart(); break;
+    case "status": cmdStatus(); break;
+    case "mailbox": cmdMailbox(); break;
+    case "stop": cmdStop(); break;
+    default:
+      die(`Unknown command: ${cmd}\nUsage: pi-cc-bridge [start|status|mailbox|stop]`);
+  }
+}

@@ -11,9 +11,9 @@ The scaffold must support public npm-published Pi packages now, private/local Pi
 - Local repo: `/Users/scottblodgett/Projects/personal/np-pi`
 - Remote: `https://github.com/Neural-Partners/np-pi.git`
 - Branch: `main`
-- Repo currently has no committed files.
-- `@neuralpartners/pi-yo` is currently published on npm as version `0.1.2` and remains in the separate `neural-os` repo for now.
-- Another Pi session is responsible for the `pi-yo` migration and verification.
+- Repo initial scaffold design is committed.
+- `@neuralpartners/pi-yo` is being migrated into `packages/pi-yo/` by the separate pi-yo migration session.
+- `@neuralpartners/pi-yo` migration updates package metadata to `0.1.3` with this repo as the source and publishes that patch version to npm.
 
 ## Approved Approach
 
@@ -231,13 +231,16 @@ For extensions:
 
 ## Coordination Boundary
 
-This scaffold must not create or modify:
+This scaffold must not overwrite `packages/pi-yo/` while the migration session owns the package move and verification.
 
-- `packages/pi-yo/`
-- any files copied from `../neural-os/packages/pi-yo`
-- npm publishing automation for `@neuralpartners/pi-yo`
+The migration session owns:
 
-The other session owns the `pi-yo` migration and verification.
+- copying package files from `../neural-os/packages/pi-yo` into `packages/pi-yo/`,
+- updating package metadata/README source links,
+- publishing the migration metadata patch release,
+- removing the old Neural OS staging copy after verification.
+
+The scaffold session owns repo-level files and should treat `packages/pi-yo/` as an existing workspace package.
 
 ## Verification
 
@@ -254,14 +257,14 @@ Expected results:
 - npm install succeeds and creates `package-lock.json`
 - root verification succeeds with no packages present or with non-conflicting packages present
 - generated file list contains docs and scaffold files only
-- no `packages/pi-yo/` path exists unless the migration session created it
+- `packages/pi-yo/` may exist if the migration session has completed the package move
 - no secrets or token values appear in tracked files
 
 ## Future Work
 
 Future work should be separate from this scaffold:
 
-- migrate `@neuralpartners/pi-yo` into `packages/pi-yo/`
+- keep `@neuralpartners/pi-yo` release metadata current after migration
 - add publishing workflows once release policy is explicit
 - add package templates for extensions and skills
 - add repo-level release tooling if multiple public packages need coordinated versioning

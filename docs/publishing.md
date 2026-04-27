@@ -1,0 +1,63 @@
+# Publishing and Secrets
+
+This repo is public. Do not commit tokens, generated auth files, `.npmrc`, `.env`, or customer-specific package contents.
+
+## Secret locations
+
+Existing secrets are stored in AWS SSM Parameter Store in `us-east-1`.
+
+| Secret     | SSM ARN                                                            |
+| ---------- | ------------------------------------------------------------------ |
+| GitHub PAT | `arn:aws:ssm:us-east-1:047719662689:parameter/np/prod/github-pat`  |
+| NPM PAT    | `arn:aws:ssm:us-east-1:047719662689:parameter/np/npm/access-token` |
+
+Use AWS profile `scott` from the local machine.
+
+## Read the npm token safely
+
+```bash
+export NPM_TOKEN="$(aws ssm get-parameter \
+  --profile scott \
+  --region us-east-1 \
+  --name /np/npm/access-token \
+  --with-decryption \
+  --query Parameter.Value \
+  --output text)"
+```
+
+Then use the environment token directly or copy `.npmrc.example` to a local `.npmrc` file. `.npmrc` is gitignored.
+
+## Read the GitHub token safely
+
+```bash
+export GITHUB_TOKEN="$(aws ssm get-parameter \
+  --profile scott \
+  --region us-east-1 \
+  --name /np/prod/github-pat \
+  --with-decryption \
+  --query Parameter.Value \
+  --output text)"
+```
+
+Prefer the GitHub CLI or existing SSH credentials for normal git operations. Use the PAT only when an operation explicitly requires it.
+
+## Manual npm publish checklist
+
+Run from the package directory, not the repo root:
+
+```bash
+cd packages/<package-name>
+npm run verify
+npm publish --access public
+```
+
+Before publishing:
+
+- confirm `package.json` has the intended `name`, `version`, `license`, `repository`, and `publishConfig`
+- confirm the package README has install and verification instructions
+- confirm `npm pack --dry-run` does not include private files
+- confirm the package's license is intentional
+
+## GitHub Actions publishing
+
+CI publishing is intentionally not configured yet. Add release automation only after release policy is explicit.

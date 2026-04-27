@@ -1,0 +1,7 @@
+# Copy these settings to ~/.npmrc or a local .npmrc when publishing.
+# Do not commit a real .npmrc; this repo ignores it.
+#
+# Export NPM_TOKEN first:
+#   export NPM_TOKEN="$(aws ssm get-parameter --profile scott --region us-east-1 --name /np/npm/access-token --with-decryption --query Parameter.Value --output text)"
+
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}

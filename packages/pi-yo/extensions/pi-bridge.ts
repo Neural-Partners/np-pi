@@ -231,6 +231,10 @@ function safeSession(session: RegistryEntry): RegistryEntry {
 	return bridgeCore.sanitizeSessionForDisplay(session) as RegistryEntry;
 }
 
+function notifyCommand(ctx: ExtensionContext, content: string, level: "info" | "warning" | "error" | "success", action?: string): void {
+	(ctx.ui.notify as any)(bridgeCore.formatNoticeWithControls(content, { action }), level);
+}
+
 function logToolUsage(ctx: any, kind: string, name: string, metadata: Record<string, unknown> = {}): void {
 	const now = Date.now();
 	let sessionFile: string | undefined;
@@ -509,7 +513,7 @@ export default function (pi: ExtensionAPI) {
 			const sessions = pruneDeadSessions(registry.sessions);
 
 			if (sessions.length === 0) {
-				ctx.ui.notify("No Pi sessions found.", "info");
+				notifyCommand(ctx, "No Pi sessions found.", "info", "Start or reload another Pi session, then run /bridge-list again.");
 				return;
 			}
 
@@ -527,7 +531,7 @@ export default function (pi: ExtensionAPI) {
 			const duplicateBlock = duplicates.length > 0
 				? `\n\n⚠️ Duplicate cwd sessions detected — target canonical PID/name explicitly:\n${duplicates.map((d) => `  - ${d}`).join("\n")}`
 				: "";
-			ctx.ui.notify(`Active Pi sessions:\n${lines.join("\n")}${duplicateBlock}`, "info");
+			notifyCommand(ctx, `Active Pi sessions:\n${lines.join("\n")}${duplicateBlock}`, "info", "Use /bridge-send <target> <message>, /bridge-ping <target>, or /yo list.");
 		},
 	});
 
@@ -537,9 +541,9 @@ export default function (pi: ExtensionAPI) {
 			logToolUsage(ctx, "slash_command", "bridge-mailbox");
 			try {
 				const content = bridgeCore.readAndClearFileAtomic(myMailboxFile).trim();
-				ctx.ui.notify(content || "Bridge mailbox is empty.", "info");
+				ctx.ui.notify(bridgeCore.formatMailboxNotice(content), "info");
 			} catch (err) {
-				ctx.ui.notify(`Failed to read bridge mailbox: ${err}`, "error");
+				notifyCommand(ctx, `Failed to read bridge mailbox: ${err}`, "error", "Fix the mailbox error, then run /bridge-mailbox again.");
 			}
 		},
 	});
@@ -550,7 +554,7 @@ export default function (pi: ExtensionAPI) {
 			logToolUsage(ctx, "slash_command", "bridge-send", { hasArgs: Boolean(args.trim()) });
 			const match = args.trim().match(/^(\S+)\s+([\s\S]+)$/);
 			if (!match) {
-				ctx.ui.notify("Usage: /bridge-send <name-or-pid> <message>", "warning");
+				notifyCommand(ctx, "Usage: /bridge-send <name-or-pid> <message>", "warning", "Run /bridge-list to find session names and PIDs.");
 				return;
 			}
 
@@ -558,7 +562,7 @@ export default function (pi: ExtensionAPI) {
 			const resolution = resolveSession(target, myPid);
 
 			if (resolution.status !== "found") {
-				ctx.ui.notify(formatResolutionError(target, resolution, getActiveSessions(myPid)), "error");
+				notifyCommand(ctx, formatResolutionError(target, resolution, getActiveSessions(myPid)), "error", "Use an exact name or PID from /bridge-list.");
 				return;
 			}
 			const session = resolution.session as RegistryEntry;
@@ -577,9 +581,9 @@ export default function (pi: ExtensionAPI) {
 				const receipt = await sendToSocket(session.socketPath, msg);
 				focusSupacodeTab(session);
 				const safe = safeSession(session);
-				ctx.ui.notify(`✉️  Sent to "${safe.name}"${safe.supacodeTabId ? " — focusing their tab" : ""}.${receiptSuffix(receipt)}`, receipt.acked ? "success" : "warning");
+				notifyCommand(ctx, `✉️  Sent to "${safe.name}"${safe.supacodeTabId ? " — focusing their tab" : ""}.${receiptSuffix(receipt)}`, receipt.acked ? "success" : "warning", "Transport ACK only means the recipient process accepted the message.");
 			} catch (err) {
-				ctx.ui.notify(`Failed to send to "${safeSession(session).name}": ${err}`, "error");
+				notifyCommand(ctx, `Failed to send to "${safeSession(session).name}": ${err}`, "error", "Run /bridge-ping <target> or /bridge-list to check the recipient.");
 			}
 		},
 	});
@@ -601,7 +605,7 @@ export default function (pi: ExtensionAPI) {
 				const behaviorLines = Object.entries(roster.behaviors)
 					.sort(([a], [b]) => Number(a) - Number(b))
 					.map(([key, value]) => `  -${key}: ${safeText(value.label, 200)}`);
-				ctx.ui.notify([
+				notifyCommand(ctx, [
 					"/yo shorthand roster",
 					"",
 					"Targets:",
@@ -615,13 +619,13 @@ export default function (pi: ExtensionAPI) {
 					"",
 					"Example: /yo -1 -2 -999 prod checkout leak — please investigate",
 					`Config: ${BRIDGE_ROSTER_FILE}`,
-				].join("\n"), "info");
+				].join("\n"), "info", "Use /yo -<target> [-<source>] [-<behavior>] <message> to send.");
 				return;
 			}
 
 			const targetAlias = parseNumericFlag(tokens.shift()) ?? "";
 			if (!targetAlias) {
-				ctx.ui.notify("Usage: /yo -<target> [-<source>] [-<behavior>] <message>  (try /yo list)", "warning");
+				notifyCommand(ctx, "Usage: /yo -<target> [-<source>] [-<behavior>] <message>  (try /yo list)", "warning", "Run /yo list to see configured target, source, and behavior aliases.");
 				return;
 			}
 
@@ -641,7 +645,7 @@ export default function (pi: ExtensionAPI) {
 
 			const content = tokens.join(" ").trim();
 			if (!content) {
-				ctx.ui.notify("/yo needs a message body. Example: /yo -1 -2 -999 prod issue details", "warning");
+				notifyCommand(ctx, "/yo needs a message body. Example: /yo -1 -2 -999 prod issue details", "warning", "Run /yo list to inspect aliases before sending.");
 				return;
 			}
 
@@ -653,7 +657,7 @@ export default function (pi: ExtensionAPI) {
 						return `"${s.name}" pid:${rawSession.pid} cwd:${s.cwd}`;
 					})
 					.join("\n  ");
-				ctx.ui.notify(`No active session found for /yo target -${safeText(targetAlias, 50)}.\nAvailable:\n  ${available || "(none)"}\nConfig: ${BRIDGE_ROSTER_FILE}`, "error");
+				notifyCommand(ctx, `No active session found for /yo target -${safeText(targetAlias, 50)}.\nAvailable:\n  ${available || "(none)"}\nConfig: ${BRIDGE_ROSTER_FILE}`, "error", "Run /bridge-list to see active sessions or update the bridge roster config.");
 				return;
 			}
 
@@ -683,15 +687,15 @@ export default function (pi: ExtensionAPI) {
 				const receipt = await sendToSocket(session.socketPath, msg);
 				focusSupacodeTab(session);
 				const safe = safeSession(session);
-				ctx.ui.notify([
+				notifyCommand(ctx, [
 					`✉️  /yo delivered to ${safeText(target.role, 200)} (${safe.name} pid:${session.pid}).`,
 					receipt.acked ? "Transport ACK received from recipient process." : receipt.warning,
 					behavior.isReply ? "No reply requested." : "Agent reply/ACK still depends on recipient behavior.",
 					warning ? `Warning: ${warning}` : "",
 					"Delivery receipt is not the same as human/agent completion.",
-				].filter(Boolean).join("\n"), receipt.acked ? "success" : "warning");
+				].filter(Boolean).join("\n"), receipt.acked ? "success" : "warning", "Use /bridge-mailbox to review held inbound messages.");
 			} catch (err) {
-				ctx.ui.notify(`Failed to /yo ${safeText(target.role, 200)} (${safeSession(session).name}): ${err}`, "error");
+				notifyCommand(ctx, `Failed to /yo ${safeText(target.role, 200)} (${safeSession(session).name}): ${err}`, "error", "Run /bridge-ping <target> or /bridge-list to check the recipient.");
 			}
 		},
 	});
@@ -702,13 +706,13 @@ export default function (pi: ExtensionAPI) {
 			logToolUsage(ctx, "slash_command", "bridge-ping", { hasArgs: Boolean(args.trim()) });
 			const target = args.trim();
 			if (!target) {
-				ctx.ui.notify("Usage: /bridge-ping <name-or-pid>", "warning");
+				notifyCommand(ctx, "Usage: /bridge-ping <name-or-pid>", "warning", "Run /bridge-list to find session names and PIDs.");
 				return;
 			}
 
 			const resolution = resolveSession(target, myPid);
 			if (resolution.status !== "found") {
-				ctx.ui.notify(formatResolutionError(target, resolution, getActiveSessions(myPid)), "error");
+				notifyCommand(ctx, formatResolutionError(target, resolution, getActiveSessions(myPid)), "error", "Use an exact name or PID from /bridge-list.");
 				return;
 			}
 			const session = resolution.session as RegistryEntry;
@@ -725,9 +729,9 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const receipt = await sendToSocket(session.socketPath, msg);
 				const safe = safeSession(session);
-				ctx.ui.notify(receipt.acked ? `📡 Pong from "${safe.name}" received` : `📡 Ping delivered to "${safe.name}", but ${receipt.warning}`, receipt.acked ? "success" : "warning");
+				notifyCommand(ctx, receipt.acked ? `📡 Pong from "${safe.name}" received` : `📡 Ping delivered to "${safe.name}", but ${receipt.warning}`, receipt.acked ? "success" : "warning", "Pong confirms the recipient process is reachable now.");
 			} catch (err) {
-				ctx.ui.notify(`Ping to "${safeSession(session).name}" failed: ${err}`, "error");
+				notifyCommand(ctx, `Ping to "${safeSession(session).name}" failed: ${err}`, "error", "Run /bridge-list to verify the target is still registered.");
 			}
 		},
 	});

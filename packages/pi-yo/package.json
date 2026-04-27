@@ -1,6 +1,6 @@
 {
   "name": "@neuralpartners/pi-yo",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Inter-terminal messaging for Pi agents and Claude Code sessions.",
   "keywords": [
     "pi-package",

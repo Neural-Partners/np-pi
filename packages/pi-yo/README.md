@@ -110,6 +110,21 @@ Roster config lives outside the package:
 
 Public package defaults intentionally ship with no personal project aliases. Add local aliases in your own config.
 
+## Pi slash command controls
+
+Human-facing Pi slash commands include an in-screen footer with the controls and next-step hint.
+
+Default controls:
+
+- `Esc`: close the current Pi notice/view.
+- `Ctrl+C`: exit Pi.
+
+Mailbox behavior:
+
+- `/bridge-mailbox` reads and clears the Pi session mailbox when the notice opens.
+- Copy anything you need before closing the mailbox notice.
+- If the mailbox is empty, the notice still shows the same close controls so the screen is not a guessing game.
+
 ## CLI
 
 ```bash
@@ -122,6 +137,8 @@ pi-cc-bridge start
 pi-cc-bridge mailbox
 pi-cc-bridge stop
 ```
+
+`pi-cc-bridge mailbox` prints mailbox contents and exits automatically; there is no interactive view to close.
 
 ## Verification
 

@@ -4,7 +4,7 @@ Trusted-local inter-session messaging for Pi agents.
 
 Source repository: <https://github.com/Neural-Partners/np-pi/tree/main/packages/pi-yo>
 
-> **Status:** public npm package published as `@neuralpartners/pi-yo` (unscoped `pi-yo` is blocked by npm similarity rules). Commercial use requires a separate license from Neural Partners.
+> **Status:** public npm package published as `@neuralpartners/pi-yo` (unscoped `pi-yo` is blocked by npm similarity rules).
 
 ## What it does
 
@@ -15,17 +15,22 @@ Source repository: <https://github.com/Neural-Partners/np-pi/tree/main/packages/
 - CLI helpers: `pimsg`, `pi-cc-bridge`
 - transport receipts: `ACK received` / `pong` from the recipient process
 
+Use it as the walkie-talkie layer between agents that are already running in different terminals. Common coordination messages include:
+
+- telling another agent a deploy started, finished, failed, or needs smoke testing
+- warning that a file, branch, Terraform stack, local port, or package version is being edited
+- asking a peer session to avoid a path while another agent owns it
+- sharing dependency/API/schema changes before downstream work continues
+- sending blockers, review requests, reproduction steps, or handoff notes without switching terminals
+- replying with `reply_to_session` / `pimsg --reply` so agents do not create infinite reply loops
+
 Transport ACK means the recipient process validated and accepted the frame for its local path. In the Pi extension path that means it queued the message for `sendUserMessage` or held it in the bridge mailbox; in `pi-cc-bridge` it means the message was appended to the mailbox. It does **not** mean the human or agent completed the work.
 
-## License and commercial use
+## License
 
-`pi-yo` is released under the **PolyForm Noncommercial License 1.0.0**.
+`pi-yo` is released under the **MIT License**.
 
-- Noncommercial use, learning, experimentation, and forks are allowed under the license.
-- Commercial use requires a separate commercial license from Neural Partners.
-- This is source-available/noncommercial, not OSI-open-source, because OSI open-source licenses allow commercial use.
-
-Commercial licensing: contact Neural Partners.
+Commercial use, private use, modification, distribution, and forks are allowed under the MIT terms. See [`LICENSE`](LICENSE).
 
 ## Trust model
 

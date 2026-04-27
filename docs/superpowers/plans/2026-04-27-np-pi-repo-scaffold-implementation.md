@@ -272,7 +272,6 @@ This repository is a container for multiple Neural Partners Pi packages and supp
 
 Package-specific license terms are declared by each package's package.json and LICENSE file. If a package or file does not declare separate license terms, all rights are reserved by Neural Partners unless Neural Partners grants a separate written license.
 
-Commercial use of Neural Partners source-available packages may require a separate commercial license. See the relevant package README for details.
 ````
 
 - [ ] **Step 3: Create `docs/pi-packages.md`**

@@ -319,3 +319,28 @@ test("doctorIpcPermissions reports but does not chmod symlink extra files", () =
   assert.equal(fs.statSync(target).mode & 0o777, 0o644);
   assert.equal(result.findings.some((finding) => finding.path === link && finding.issue === "symbolic-link"), true);
 });
+
+test("formatNoticeWithControls appends an explicit dismiss footer", () => {
+  const notice = core.formatNoticeWithControls("Active Pi sessions:\n  • backend", {
+    action: "Use /bridge-send <target> <message> to send a message.",
+  });
+
+  assert.match(notice, /Active Pi sessions/);
+  assert.match(notice, /Use \/bridge-send <target> <message>/);
+  assert.match(notice, /Controls:/);
+  assert.match(notice, /Esc/i);
+  assert.match(notice, /close/i);
+  assert.equal(notice.endsWith("\n"), false);
+});
+
+test("formatMailboxNotice explains close controls and mailbox clearing", () => {
+  const notice = core.formatMailboxNotice("---\nmessage body\n---");
+
+  assert.match(notice, /message body/);
+  assert.match(notice, /Mailbox was cleared when this notice opened/);
+  assert.match(notice, /Esc/i);
+
+  const empty = core.formatMailboxNotice("");
+  assert.match(empty, /Bridge mailbox is empty/);
+  assert.match(empty, /Controls:/);
+});

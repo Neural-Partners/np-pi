@@ -26,6 +26,22 @@ Use it as the walkie-talkie layer between agents that are already running in dif
 
 Transport ACK means the recipient process validated and accepted the frame for its local path. In the Pi extension path that means it queued the message for `sendUserMessage` or held it in the bridge mailbox; in `pi-cc-bridge` it means the message was appended to the mailbox. It does **not** mean the human or agent completed the work.
 
+## Screenshots
+
+Screenshots are bundled in the npm package under [`assets/`](assets/) and use raw GitHub URLs here so they render on npm.
+
+### Mailbox-only review
+
+`mailbox-only` policy holds inbound messages for manual review instead of injecting them directly into model context.
+
+![Mailbox-only review screen](https://raw.githubusercontent.com/Neural-Partners/np-pi/main/packages/pi-yo/assets/mailbox-review.png)
+
+### Pi to Claude Code coordination loop
+
+Pi can send to Claude Code sessions through `pi-cc-bridge`, Claude Code can reply with `pimsg --reply`, and Pi receives the reply without creating an infinite response loop.
+
+![Pi to Claude Code message flow](https://raw.githubusercontent.com/Neural-Partners/np-pi/main/packages/pi-yo/assets/pi-to-claude-code-flow.png)
+
 ## License
 
 `pi-yo` is released under the **MIT License**.
@@ -110,6 +126,21 @@ Roster config lives outside the package:
 
 Public package defaults intentionally ship with no personal project aliases. Add local aliases in your own config.
 
+## Pi slash command controls
+
+Human-facing Pi slash commands include an in-screen footer with the controls and next-step hint.
+
+Default controls:
+
+- `Esc`: close the current Pi notice/view.
+- `Ctrl+C`: exit Pi.
+
+Mailbox behavior:
+
+- `/bridge-mailbox` reads and clears the Pi session mailbox when the notice opens.
+- Copy anything you need before closing the mailbox notice.
+- If the mailbox is empty, the notice still shows the same close controls so the screen is not a guessing game.
+
 ## CLI
 
 ```bash
@@ -122,6 +153,8 @@ pi-cc-bridge start
 pi-cc-bridge mailbox
 pi-cc-bridge stop
 ```
+
+`pi-cc-bridge mailbox` prints mailbox contents and exits automatically; there is no interactive view to close.
 
 ## Verification
 

@@ -800,6 +800,33 @@ function createSocketResponse(type, message, sender, extra = {}) {
   };
 }
 
+const DEFAULT_NOTICE_CONTROLS = "Controls: Esc closes this notice • Ctrl+C exits Pi";
+
+function formatNoticeWithControls(content, options = {}) {
+  const body = String(content ?? "").trimEnd() || "(empty)";
+  const action = typeof options.action === "string" ? options.action.trim() : "";
+  const controls = options.controls === false
+    ? ""
+    : typeof options.controls === "string" && options.controls.trim()
+      ? options.controls.trim()
+      : DEFAULT_NOTICE_CONTROLS;
+
+  return [body, action, controls].filter(Boolean).join("\n\n").trimEnd();
+}
+
+function formatMailboxNotice(content) {
+  const body = String(content ?? "").trim();
+  if (!body) {
+    return formatNoticeWithControls("Bridge mailbox is empty.", {
+      action: "Mailbox was checked and remains empty.",
+    });
+  }
+
+  return formatNoticeWithControls(body, {
+    action: "Mailbox was cleared when this notice opened. Copy anything you need before closing.",
+  });
+}
+
 module.exports = {
   DEFAULT_ACK_TIMEOUT_MS,
   DEFAULT_BRIDGE_POLICY,
@@ -807,6 +834,7 @@ module.exports = {
   DEFAULT_MAX_CONTENT_BYTES,
   DEFAULT_MAX_FIELD_BYTES,
   DEFAULT_MAX_FRAME_BYTES,
+  DEFAULT_NOTICE_CONTROLS,
   DEFAULT_PATHS,
   DEFAULT_PROTOCOL_VERSION,
   DEFAULT_TOOL_USAGE_BACKUPS,
@@ -826,6 +854,8 @@ module.exports = {
   ensureIpcDir,
   ensureMessageId,
   formatCandidateList,
+  formatMailboxNotice,
+  formatNoticeWithControls,
   getProcessCommand,
   isAllowedBridgeSocketPath,
   isExpectedDaemonProcess,

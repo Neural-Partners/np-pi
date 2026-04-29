@@ -8,6 +8,10 @@ const path = require("node:path");
 
 const packageRoot = path.resolve(__dirname, "..");
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 test("package exposes the bundled pi-yo skill with required coordination guidance", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(packageRoot, "package.json"), "utf-8"),
@@ -37,9 +41,21 @@ test("package exposes the bundled pi-yo skill with required coordination guidanc
     "Reserve message IDs up front",
     "Do not send secrets",
   ]) {
-    assert.match(
-      skill,
-      new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    );
+    assert.match(skill, new RegExp(escapeRegExp(required)));
+  }
+});
+
+test("extension exposes self visibility controls", () => {
+  const extensionPath = path.join(packageRoot, "extensions", "pi-bridge.ts");
+  const extension = fs.readFileSync(extensionPath, "utf-8");
+
+  for (const required of [
+    "bridgeVisibility",
+    "bridge-visibility",
+    "set_session_visibility",
+    "This session is hidden from normal pi-yo discovery",
+    "Exact PID still works",
+  ]) {
+    assert.match(extension, new RegExp(escapeRegExp(required)));
   }
 });

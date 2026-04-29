@@ -11,14 +11,17 @@
  *
  * Commands (for the human):
  *   /bridge-list                        - List all discoverable Pi sessions
+ *   /bridge-visibility status|invisible|visible
+ *                                      - Show or set this session's discovery visibility
  *   /bridge-send <name-or-id> <message> - Send a message to another session
  *   /bridge-ping <name-or-id>           - Ping another session to check it's alive
  *   /yo -<target> -<source> -<behavior> <message>
  *                                      - Shorthand send via canonical roster aliases
  *
  * LLM Tools (Claude can use these autonomously):
- *   list_sessions      - Discover available Pi sessions
- *   send_to_session    - Send a message to another session
+ *   list_sessions           - Discover available Pi sessions
+ *   set_session_visibility  - Hide or reveal this Pi session in discovery
+ *   send_to_session         - Send a message to another session
  *
  * Session names:
  *   By default each session is identified by its working directory basename.
@@ -51,6 +54,7 @@ interface RegistryEntry {
 	cwd: string;
 	socketPath: string;
 	startedAt: number;
+	bridgeVisibility?: "visible" | "invisible";
 	// Supacode context (present when running inside Supacode)
 	supacodeTabId?: string;
 	supacodeWorktreeId?: string; // percent-encoded
@@ -124,12 +128,18 @@ function unregisterSession(pid: number): void {
 	bridgeCore.unregisterSession(pid, REGISTRY_FILE);
 }
 
-function getActiveSessions(excludePid?: number): RegistryEntry[] {
-	return bridgeCore.activeSessions({ registryFile: REGISTRY_FILE, excludePid }) as RegistryEntry[];
+function visibleSessions(sessions: RegistryEntry[]): RegistryEntry[] {
+	return bridgeCore.visibleSessions(sessions) as RegistryEntry[];
+}
+
+function getActiveSessions(excludePid?: number, options: { includeInvisible?: boolean } = {}): RegistryEntry[] {
+	const sessions = bridgeCore.activeSessions({ registryFile: REGISTRY_FILE, excludePid }) as RegistryEntry[];
+	return options.includeInvisible ? sessions : visibleSessions(sessions);
 }
 
 function resolveSession(nameOrId: string, excludePid?: number): any {
-	return bridgeCore.resolveSessionTarget(nameOrId, getActiveSessions(excludePid));
+	const sessions = getActiveSessions(excludePid, { includeInvisible: true });
+	return bridgeCore.resolveSessionTarget(nameOrId, sessions);
 }
 
 function findSession(nameOrId: string, excludePid?: number): RegistryEntry | undefined {
@@ -209,6 +219,21 @@ function duplicateCwdWarnings(sessions: RegistryEntry[]): string[] {
 	return bridgeCore.duplicateCwdWarnings(sessions);
 }
 
+function getSessionVisibility(session: RegistryEntry | undefined): "visible" | "invisible" {
+	return bridgeCore.normalizeBridgeVisibility(session?.bridgeVisibility) as "visible" | "invisible";
+}
+
+function visibilityStatusLine(visibility: "visible" | "invisible", pid: number): string {
+	if (visibility === "invisible") {
+		return `Bridge visibility: invisible\nThis session is hidden from normal pi-yo discovery and name/cwd targeting. Exact PID still works: ${pid}.`;
+	}
+	return "Bridge visibility: visible\nThis session appears in pi-yo discovery and normal target resolution.";
+}
+
+function visibilityNotice(session: RegistryEntry): string {
+	return getSessionVisibility(session) === "invisible" ? " (invisible; exact PID target)" : "";
+}
+
 function chooseCanonicalSession(candidates: RegistryEntry[], target: BridgeRosterTarget): RegistryEntry | undefined {
 	if (candidates.length === 0) return undefined;
 	if (target.pid) {
@@ -264,11 +289,11 @@ function resolveRosterTarget(alias: string, roster: BridgeRoster, excludePid?: n
 	const target = roster.targets[alias];
 	if (!target) return {};
 
-	const sessions = getActiveSessions(excludePid);
-	const candidates = sessions.filter((s) => {
+	const allSessions = getActiveSessions(excludePid, { includeInvisible: true });
+	const candidates = allSessions.filter((s) => {
 		if (target.pid && s.pid === target.pid) return true;
-		if (target.name && s.name === target.name) return true;
-		if (target.cwd && s.cwd === target.cwd) return true;
+		if (target.name && bridgeCore.isSessionVisible(s) && s.name === target.name) return true;
+		if (target.cwd && bridgeCore.isSessionVisible(s) && s.cwd === target.cwd) return true;
 		return false;
 	});
 
@@ -321,6 +346,14 @@ export default function (pi: ExtensionAPI) {
 	// Helper to get the display name for this session
 	function getMyName(ctx: ExtensionContext): string {
 		return pi.getSessionName() ?? path.basename(ctx.cwd);
+	}
+
+	function currentRegistryEntry(): RegistryEntry | undefined {
+		return readRegistry().sessions.find((session) => session.pid === myPid);
+	}
+
+	function setMyVisibility(visibility: "visible" | "invisible"): any {
+		return bridgeCore.setSessionVisibility(myPid, visibility, REGISTRY_FILE);
 	}
 
 	function readPolicy(): any {
@@ -474,6 +507,7 @@ export default function (pi: ExtensionAPI) {
 			cwd: ctx.cwd,
 			socketPath: mySocketPath,
 			startedAt: Date.now(),
+			bridgeVisibility: "visible",
 			...(process.env.SUPACODE_TAB_ID && {
 				supacodeTabId: process.env.SUPACODE_TAB_ID,
 				supacodeWorktreeId: process.env.SUPACODE_WORKTREE_ID,
@@ -514,13 +548,36 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Commands (human-facing) ────────────────────────────────────────────
 
+	pi.registerCommand("bridge-visibility", {
+		description: "Show or set this Pi session's bridge visibility (usage: /bridge-visibility status|invisible|visible)",
+		handler: async (args, ctx) => {
+			logToolUsage(ctx, "slash_command", "bridge-visibility", { hasArgs: Boolean(args.trim()) });
+			const action = args.trim().toLowerCase() || "status";
+
+			if (action === "status") {
+				const visibility = getSessionVisibility(currentRegistryEntry());
+				notifyCommand(ctx, visibilityStatusLine(visibility, myPid), "info", "Use /bridge-visibility invisible or /bridge-visibility visible to change it.");
+				return;
+			}
+
+			if (action !== "visible" && action !== "invisible") {
+				notifyCommand(ctx, "Usage: /bridge-visibility status|invisible|visible", "warning", "This command only changes the current Pi session.");
+				return;
+			}
+
+			const result = setMyVisibility(action as "visible" | "invisible");
+			const level = result.updated ? "success" : "warning";
+			const footer = result.updated ? "This only affects the current Pi session." : "Session was not found in the registry; try /reload if this persists.";
+			notifyCommand(ctx, visibilityStatusLine(action as "visible" | "invisible", myPid), level, footer);
+		},
+	});
+
 	pi.registerCommand("bridge-list", {
 		description: "List all discoverable Pi sessions",
 		handler: async (_args, ctx) => {
 			logToolUsage(ctx, "slash_command", "bridge-list");
-			// Include self so the current session's PID is always visible
 			const registry = readRegistry();
-			const sessions = pruneDeadSessions(registry.sessions);
+			const sessions = visibleSessions(pruneDeadSessions(registry.sessions));
 
 			if (sessions.length === 0) {
 				notifyCommand(ctx, "No Pi sessions found.", "info", "Start or reload another Pi session, then run /bridge-list again.");
@@ -593,7 +650,7 @@ export default function (pi: ExtensionAPI) {
 				const safe = safeSession(session);
 				notifyCommand(
 					ctx,
-					`✉️  Sent to "${safe.name}".${focusNotice(focus)}${receiptSuffix(receipt)}`,
+					`✉️  Sent to "${safe.name}"${visibilityNotice(session)}.${focusNotice(focus)}${receiptSuffix(receipt)}`,
 					receipt.acked ? "success" : "warning",
 					"Transport ACK only means the recipient process accepted the message.",
 				);
@@ -703,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 				const focus = maybeFocusSession(session);
 				const safe = safeSession(session);
 				notifyCommand(ctx, [
-					`✉️  /yo delivered to ${safeText(target.role, 200)} (${safe.name} pid:${session.pid}).`,
+					`✉️  /yo delivered to ${safeText(target.role, 200)} (${safe.name} pid:${session.pid})${visibilityNotice(session)}.`,
 					receipt.acked ? "Transport ACK received from recipient process." : receipt.warning,
 					behavior.isReply ? "No reply requested." : "Agent reply/ACK still depends on recipient behavior.",
 					focusNotice(focus),
@@ -745,7 +802,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const receipt = await sendToSocket(session.socketPath, msg);
 				const safe = safeSession(session);
-				notifyCommand(ctx, receipt.acked ? `📡 Pong from "${safe.name}" received` : `📡 Ping delivered to "${safe.name}", but ${receipt.warning}`, receipt.acked ? "success" : "warning", "Pong confirms the recipient process is reachable now.");
+				notifyCommand(ctx, receipt.acked ? `📡 Pong from "${safe.name}"${visibilityNotice(session)} received` : `📡 Ping delivered to "${safe.name}"${visibilityNotice(session)}, but ${receipt.warning}`, receipt.acked ? "success" : "warning", "Pong confirms the recipient process is reachable now.");
 			} catch (err) {
 				notifyCommand(ctx, `Ping to "${safeSession(session).name}" failed: ${err}`, "error", "Run /bridge-list to verify the target is still registered.");
 			}
@@ -753,6 +810,47 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── LLM Tools ─────────────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "set_session_visibility",
+		label: "Set Pi Session Visibility",
+		description:
+			"Show or set this Pi agent session's pi-yo bridge visibility. " +
+			"Use this when the user asks this Pi agent to go invisible, hide from bridge discovery, become visible again, or report visibility.",
+		promptSnippet: "Hide or reveal this Pi session in pi-yo discovery",
+		promptGuidelines: [
+			"Only change the current Pi session's visibility; do not hide or reveal other sessions.",
+			"Use invisible mode to remove this session from list_sessions, /bridge-list, pimsg list, and normal name/cwd/fuzzy targeting.",
+			"Exact PID targeting still reaches an invisible session, so include the PID in your response when hiding.",
+		],
+		parameters: Type.Object({
+			visibility: Type.String({
+				description: "Use 'invisible', 'visible', or 'status'.",
+			}),
+		}),
+		async execute(_toolCallId, params) {
+			const requested = String(params.visibility ?? "status").toLowerCase();
+			if (requested === "status") {
+				const visibility = getSessionVisibility(currentRegistryEntry());
+				return {
+					content: [{ type: "text", text: visibilityStatusLine(visibility, myPid) }],
+					details: { visibility, pid: myPid },
+				};
+			}
+			if (requested !== "visible" && requested !== "invisible") {
+				return {
+					content: [{ type: "text", text: "visibility must be 'visible', 'invisible', or 'status'." }],
+					isError: true,
+				};
+			}
+			const result = setMyVisibility(requested as "visible" | "invisible");
+			return {
+				content: [{ type: "text", text: visibilityStatusLine(requested as "visible" | "invisible", myPid) }],
+				details: { visibility: requested, pid: myPid, updated: result.updated },
+				isError: !result.updated,
+			};
+		},
+	});
 
 	pi.registerTool({
 		name: "list_sessions",
@@ -849,7 +947,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Message delivered to "${safe.name}" (${safe.cwd}).${focusNotice(focus)}${receiptSuffix(receipt)}`,
+							text: `Message delivered to "${safe.name}"${visibilityNotice(session)} (${safe.cwd}).${focusNotice(focus)}${receiptSuffix(receipt)}`,
 						},
 					],
 					details: { to: safe.name, toCwd: safe.cwd, acked: receipt.acked, receipt: receipt.response, focus },
@@ -922,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Reply delivered to "${safe.name}" (${safe.cwd}).${focusNotice(focus)}${receiptSuffix(receipt)}`,
+							text: `Reply delivered to "${safe.name}"${visibilityNotice(session)} (${safe.cwd}).${focusNotice(focus)}${receiptSuffix(receipt)}`,
 						},
 					],
 					details: { to: safe.name, toCwd: safe.cwd, acked: receipt.acked, receipt: receipt.response, focus },

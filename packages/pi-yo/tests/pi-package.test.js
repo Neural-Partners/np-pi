@@ -26,6 +26,15 @@ test("package exposes the bundled pi-yo skill with required coordination guidanc
     "reply_to_session",
     "/bridge-mailbox",
     "ACK means transport accepted the message",
+    "task ACK",
+    "ack | deliverable | blocker | qa-result",
+    "Target by exact PID, cwd, or role alias",
+    "one assignment → one ACK → one deliverable",
+    "runId",
+    "msgId",
+    "replyTo",
+    "No auto-execution from message text",
+    "Reserve message IDs up front",
     "Do not send secrets",
   ]) {
     assert.match(

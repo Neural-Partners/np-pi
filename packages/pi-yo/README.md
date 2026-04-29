@@ -75,13 +75,37 @@ Policy lives outside the package:
 ~/.pi/agent/bridge-policy.json
 ```
 
-Default policy preserves the original behavior:
+Default policy auto-injects allowed local messages and uses smart focus:
 
 ```json
 {
   "mode": "auto-inject",
   "allowlist": [],
-  "rateLimit": { "perSenderPer10s": 5 }
+  "rateLimit": { "perSenderPer10s": 5 },
+  "focus": {
+    "mode": "smart",
+    "allowedFrontmostApps": [
+      "Supacode",
+      "Terminal",
+      "iTerm2",
+      "Warp",
+      "Ghostty",
+      "WezTerm",
+      "Cursor",
+      "Visual Studio Code",
+      "Code",
+      "Zed",
+      "Sublime Text",
+      "Antigravity",
+      "Kiro",
+      "Windsurf",
+      "WebStorm",
+      "IntelliJ IDEA",
+      "Claude",
+      "Claude Desktop",
+      "Codex"
+    ]
+  }
 }
 ```
 
@@ -105,6 +129,18 @@ Allowlist behavior:
 ```
 
 If a sender exceeds the per-sender rate limit, messages are held in the mailbox instead of auto-injected.
+
+## Smart focus policy
+
+`pi-yo` can focus the target Supacode tab after a successful bridge send. The default is `smart`, which focuses only when your current frontmost macOS app is an agent/dev app. This keeps the fast dispatch workflow when you are working in Supacode, a terminal, Cursor, an IDE, Claude Desktop, or Codex, but avoids stealing focus when you are in Chrome, Figma, Slack, email, or another non-agent app.
+
+Focus config lives in `~/.pi/agent/bridge-policy.json`:
+
+- `focus.mode: "smart"` — default; focus only when the frontmost app is allowlisted.
+- `focus.mode: "always"` — restore the old behavior and focus whenever the target has Supacode metadata.
+- `focus.mode: "never"` — disable auto-focus entirely.
+
+In v1, only Supacode targets can be focused because the bridge registry currently stores Supacode tab/worktree IDs. IDE names in `allowedFrontmostApps` mean "it is OK to focus a Supacode target while this app is frontmost"; they do not yet focus Cursor, VS Code, Windsurf, Kiro, or other IDE windows as targets.
 
 ## Install
 

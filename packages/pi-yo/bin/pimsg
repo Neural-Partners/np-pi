@@ -3,7 +3,8 @@
  * pimsg — send a message to a Pi/pi-bridge session from anywhere
  *
  * Usage:
- *   pimsg list                          List all active Pi sessions
+ *   pimsg list                          List all visible Pi sessions
+ *   pimsg list --all                    Include invisible sessions for diagnostics
  *   pimsg <target> <message...>         Send a message to a session
  *   pimsg --reply <target> <message...> Send a reply (no further reply expected)
  *
@@ -53,7 +54,8 @@ function safeSession(session) {
 function printHelp() {
   console.log([
     "Usage:",
-    "  pimsg list                         List all active Pi sessions",
+    "  pimsg list                         List all visible Pi sessions",
+    "  pimsg list --all                   Include invisible sessions for diagnostics",
     "  pimsg <target> <message...>        Send a message to a session",
     "  pimsg --reply <target> <message..> Send a reply (no further reply expected)",
     "  pimsg doctor [--fix]              Inspect or repair pi-bridge IPC permissions",
@@ -69,8 +71,13 @@ function printHelp() {
   ].join("\n"));
 }
 
-function listSessions() {
-  const sessions = core.activeSessions();
+function visibilityLabel(session) {
+  return core.normalizeBridgeVisibility(session && session.bridgeVisibility) === "invisible" ? "  [invisible]" : "";
+}
+
+function listSessions(options = {}) {
+  const allSessions = core.activeSessions();
+  const sessions = options.includeInvisible ? allSessions : core.visibleSessions(allSessions);
   const myCwd = process.cwd();
 
   const color = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -98,10 +105,11 @@ function listSessions() {
       ? `${CYAN}${BOLD}pid:${String(rawSession.pid).padEnd(7)}${RESET}`
       : `pid:${String(rawSession.pid).padEnd(7)}`;
     const sc = session.supacodeTabId ? `  [💻 ${session.supacodeTabId.slice(0, 8)}]` : "";
-    console.log(`  ${bullet} ${nameStr} ${pidStr} ${session.cwd}  (${age}m ago)${sc}${label}`);
+    const visibility = visibilityLabel(rawSession);
+    console.log(`  ${bullet} ${nameStr} ${pidStr} ${session.cwd}  (${age}m ago)${sc}${visibility}${label}`);
   }
 
-  const duplicates = core.duplicateCwdWarnings(sessions);
+  const duplicates = core.duplicateCwdWarnings(sessions, { includeInvisible: options.includeInvisible });
   if (duplicates.length > 0) {
     console.log("\n⚠️ Duplicate cwd sessions detected — target canonical PID/name explicitly:");
     for (const duplicate of duplicates) console.log(`  - ${duplicate}`);
@@ -117,7 +125,7 @@ async function main() {
   }
 
   if (args[0] === "list") {
-    listSessions();
+    listSessions({ includeInvisible: args.includes("--all") });
     return;
   }
 

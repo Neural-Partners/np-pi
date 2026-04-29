@@ -47,6 +47,48 @@ function sampleSupacodeSession(overrides = {}) {
   };
 }
 
+test("bridge visibility defaults to visible and only invisible hides a session", () => {
+  assert.equal(core.normalizeBridgeVisibility(undefined), "visible");
+  assert.equal(core.normalizeBridgeVisibility("visible"), "visible");
+  assert.equal(core.normalizeBridgeVisibility("invisible"), "invisible");
+  assert.equal(core.normalizeBridgeVisibility("hidden"), "visible");
+  assert.equal(core.isSessionVisible({ name: "legacy" }), true);
+  assert.equal(core.isSessionVisible({ name: "standby", bridgeVisibility: "invisible" }), false);
+});
+
+test("visibleSessions excludes invisible sessions without mutating the original list", () => {
+  const sessions = [
+    { pid: 111, name: "visible", cwd: "/workspace/app", socketPath: "/tmp/111.sock", startedAt: 1 },
+    { pid: 222, name: "standby", cwd: "/workspace/app", socketPath: "/tmp/222.sock", startedAt: 1, bridgeVisibility: "invisible" },
+  ];
+
+  const visible = core.visibleSessions(sessions);
+
+  assert.deepEqual(visible.map((session) => session.pid), [111]);
+  assert.equal(sessions.length, 2);
+});
+
+test("sanitizeSessionForDisplay includes normalized bridge visibility", () => {
+  const safeLegacy = core.sanitizeSessionForDisplay({
+    pid: 999,
+    name: "legacy",
+    cwd: "/tmp/project",
+    socketPath: "/tmp/999.sock",
+    startedAt: 1,
+  });
+  const safeInvisible = core.sanitizeSessionForDisplay({
+    pid: 1000,
+    name: "standby",
+    cwd: "/tmp/project",
+    socketPath: "/tmp/1000.sock",
+    startedAt: 1,
+    bridgeVisibility: "invisible",
+  });
+
+  assert.equal(safeLegacy.bridgeVisibility, "visible");
+  assert.equal(safeInvisible.bridgeVisibility, "invisible");
+});
+
 function captureOpener(calls) {
   return (cmd, args, options) => calls.push({ cmd, args, options });
 }
@@ -76,6 +118,24 @@ test("ensureIpcDir and writeRegistry use owner-only filesystem permissions", () 
   assert.equal(fileMode(paths.registryFile), 0o600);
 });
 
+test("setSessionVisibility updates one live registry entry and preserves other sessions", () => {
+  const paths = core.buildPaths(tempHome());
+  core.writeRegistry({ sessions: [
+    { pid: process.pid, name: "current", cwd: process.cwd(), socketPath: path.join(paths.ipcDir, `${process.pid}.sock`), startedAt: 1 },
+    { pid: process.pid + 100000, name: "dead", cwd: "/tmp/dead", socketPath: path.join(paths.ipcDir, `${process.pid + 100000}.sock`), startedAt: 1 },
+  ] }, paths.registryFile);
+
+  const result = core.setSessionVisibility(process.pid, "invisible", paths.registryFile);
+  const registry = core.readRegistry(paths.registryFile);
+
+  assert.equal(result.updated, true);
+  assert.equal(result.visibility, "invisible");
+  assert.equal(registry.sessions.length, 1);
+  assert.equal(registry.sessions[0].pid, process.pid);
+  assert.equal(registry.sessions[0].bridgeVisibility, "invisible");
+  assert.equal(fileMode(paths.registryFile), 0o600);
+});
+
 test("resolveSessionTarget prefers exact session name over duplicate cwd sessions", () => {
   const sessions = [
     { pid: 111, name: "frontend", cwd: "/workspace/frontend", socketPath: "/tmp/111.sock", startedAt: 1 },
@@ -102,6 +162,48 @@ test("resolveSessionTarget fails safely on ambiguous fuzzy targets", () => {
   assert.deepEqual(result.candidates.map((s) => s.pid).sort(), [111, 222]);
   assert.match(core.formatCandidateList(result.candidates), /pid:111/);
   assert.match(core.formatCandidateList(result.candidates), /pid:222/);
+});
+
+test("resolveSessionTarget ignores invisible sessions for name cwd and fuzzy matches", () => {
+  const sessions = [
+    { pid: 111, name: "frontend", cwd: "/workspace/frontend", socketPath: "/tmp/111.sock", startedAt: 1 },
+    { pid: 222, name: "frontend", cwd: "/workspace/frontend", socketPath: "/tmp/222.sock", startedAt: 2, bridgeVisibility: "invisible" },
+  ];
+
+  const exactName = core.resolveSessionTarget("frontend", sessions);
+  assert.equal(exactName.status, "found");
+  assert.equal(exactName.session.pid, 111);
+
+  const cwdBase = core.resolveSessionTarget("frontend", [sessions[1]]);
+  assert.equal(cwdBase.status, "not_found");
+
+  const cwdSuffix = core.resolveSessionTarget("workspace/frontend", [sessions[1]]);
+  assert.equal(cwdSuffix.status, "not_found");
+
+  const fuzzy = core.resolveSessionTarget("front", [sessions[1]]);
+  assert.equal(fuzzy.status, "not_found");
+});
+
+test("resolveSessionTarget can target an invisible session by exact PID", () => {
+  const sessions = [
+    { pid: 222, name: "frontend", cwd: "/workspace/frontend", socketPath: "/tmp/222.sock", startedAt: 2, bridgeVisibility: "invisible" },
+  ];
+
+  const result = core.resolveSessionTarget("222", sessions);
+
+  assert.equal(result.status, "found");
+  assert.equal(result.matchKind, "pid");
+  assert.equal(result.session.pid, 222);
+});
+
+test("duplicateCwdWarnings ignores invisible sessions by default", () => {
+  const sessions = [
+    { pid: 111, name: "frontend", cwd: "/workspace/frontend", socketPath: "/tmp/111.sock", startedAt: 1 },
+    { pid: 222, name: "frontend standby", cwd: "/workspace/frontend", socketPath: "/tmp/222.sock", startedAt: 2, bridgeVisibility: "invisible" },
+  ];
+
+  assert.deepEqual(core.duplicateCwdWarnings(sessions), []);
+  assert.equal(core.duplicateCwdWarnings(sessions, { includeInvisible: true }).length, 1);
 });
 
 test("sendToSocket returns an ACK receipt from an updated recipient", async () => {

@@ -23,6 +23,33 @@ const DEFAULT_BRIDGE_POLICY = Object.freeze({
   allowlist: Object.freeze([]),
   rateLimit: DEFAULT_POLICY_RATE_LIMIT,
 });
+const DEFAULT_FOCUS_ALLOWED_FRONTMOST_APPS = Object.freeze([
+  "Supacode",
+  "Terminal",
+  "iTerm2",
+  "Warp",
+  "Ghostty",
+  "WezTerm",
+  "Cursor",
+  "Visual Studio Code",
+  "Code",
+  "Zed",
+  "Sublime Text",
+  "Antigravity",
+  "Kiro",
+  "Windsurf",
+  "WebStorm",
+  "IntelliJ IDEA",
+  "Claude",
+  "Claude Desktop",
+  "Codex",
+]);
+const DEFAULT_FOCUS_POLICY = Object.freeze({
+  mode: "smart",
+  allowedFrontmostApps: DEFAULT_FOCUS_ALLOWED_FRONTMOST_APPS,
+});
+const FRONTMOST_APP_SCRIPT =
+  'tell application "System Events" to get name of first application process whose frontmost is true';
 
 function buildPaths(home = os.homedir()) {
   const ipcDir = path.join(home, ".pi", "agent", "ipc");
@@ -420,7 +447,44 @@ function defaultBridgePolicy() {
     mode: DEFAULT_BRIDGE_POLICY.mode,
     allowlist: [],
     rateLimit: { ...DEFAULT_BRIDGE_POLICY.rateLimit },
+    focus: defaultFocusPolicy(),
   };
+}
+
+function defaultFocusPolicy() {
+  return {
+    mode: DEFAULT_FOCUS_POLICY.mode,
+    allowedFrontmostApps: [...DEFAULT_FOCUS_POLICY.allowedFrontmostApps],
+  };
+}
+
+function normalizeFocusPolicy(input = {}) {
+  const defaults = defaultFocusPolicy();
+  const source =
+    input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const mode =
+    source.mode === "always" ||
+    source.mode === "never" ||
+    source.mode === "smart"
+      ? source.mode
+      : defaults.mode;
+  const rawApps = Array.isArray(source.allowedFrontmostApps)
+    ? source.allowedFrontmostApps
+    : defaults.allowedFrontmostApps;
+  const seen = new Set();
+  const allowedFrontmostApps = [];
+
+  for (const app of rawApps) {
+    if (typeof app !== "string") continue;
+    const safe = sanitizeMetadata(app, 128);
+    if (!safe || safe === "unknown") continue;
+    const key = safe.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    allowedFrontmostApps.push(safe);
+  }
+
+  return { mode, allowedFrontmostApps };
 }
 
 function normalizeBridgePolicy(input = {}) {
@@ -442,7 +506,9 @@ function normalizeBridgePolicy(input = {}) {
     ? input.rateLimit.perSenderPer10s
     : defaults.rateLimit.perSenderPer10s;
 
-  return { mode, allowlist, rateLimit: { perSenderPer10s } };
+  const focus = normalizeFocusPolicy(input.focus);
+
+  return { mode, allowlist, rateLimit: { perSenderPer10s }, focus };
 }
 
 function readBridgePolicy(policyFile, options = {}) {
@@ -614,6 +680,90 @@ function openSupacodeTab(session, opener = execFileSync) {
   } catch {
     return false;
   }
+}
+
+function getFrontmostAppName(options = {}) {
+  try {
+    if (typeof options.frontmostAppName === "string") {
+      const safe = sanitizeMetadata(options.frontmostAppName, 128);
+      return safe === "unknown" ? undefined : safe;
+    }
+
+    if (typeof options.frontmostAppProvider === "function") {
+      const provided = options.frontmostAppProvider();
+      const safe = sanitizeMetadata(provided, 128);
+      return safe === "unknown" ? undefined : safe;
+    }
+
+    const runner = options.runner || execFileSync;
+    const output = runner("osascript", ["-e", FRONTMOST_APP_SCRIPT], {
+      encoding: "utf8",
+      timeout: Number.isSafeInteger(options.timeoutMs)
+        ? options.timeoutMs
+        : 500,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const safe = sanitizeMetadata(output, 128);
+    return safe === "unknown" ? undefined : safe;
+  } catch {
+    return undefined;
+  }
+}
+
+function focusAppKey(value) {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function shouldFocusSession(session, policy = {}, options = {}) {
+  if (!buildSupacodeUrl(session)) {
+    return { shouldFocus: false, reason: "target has no focus metadata" };
+  }
+
+  const focus = normalizeFocusPolicy(policy.focus || policy);
+
+  if (focus.mode === "never") {
+    return { shouldFocus: false, reason: "focus mode is never" };
+  }
+
+  if (focus.mode === "always") {
+    return { shouldFocus: true, reason: "focus mode is always" };
+  }
+
+  const frontmostApp = getFrontmostAppName(options);
+  if (!frontmostApp) {
+    return { shouldFocus: false, reason: "frontmost app unavailable" };
+  }
+
+  const allowed = new Set(focus.allowedFrontmostApps.map(focusAppKey));
+  if (allowed.has(focusAppKey(frontmostApp))) {
+    return { shouldFocus: true, reason: "frontmost app allowed", frontmostApp };
+  }
+
+  return {
+    shouldFocus: false,
+    reason: "frontmost app not allowed",
+    frontmostApp,
+  };
+}
+
+function maybeFocusSession(session, policy = {}, options = {}) {
+  const decision = shouldFocusSession(session, policy, options);
+  if (!decision.shouldFocus) {
+    return {
+      focused: false,
+      reason: decision.reason,
+      frontmostApp: decision.frontmostApp,
+    };
+  }
+
+  const opened = openSupacodeTab(session, options.opener || execFileSync);
+  return {
+    focused: opened,
+    reason: opened ? decision.reason : "focus opener failed",
+    frontmostApp: decision.frontmostApp,
+  };
 }
 
 function doctorIpcPermissions(options = {}) {
@@ -831,6 +981,8 @@ module.exports = {
   DEFAULT_ACK_TIMEOUT_MS,
   DEFAULT_BRIDGE_POLICY,
   DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_FOCUS_ALLOWED_FRONTMOST_APPS,
+  DEFAULT_FOCUS_POLICY,
   DEFAULT_MAX_CONTENT_BYTES,
   DEFAULT_MAX_FIELD_BYTES,
   DEFAULT_MAX_FRAME_BYTES,
@@ -849,6 +1001,7 @@ module.exports = {
   createSocketResponse,
   decideMessageDelivery,
   defaultBridgePolicy,
+  defaultFocusPolicy,
   doctorIpcPermissions,
   duplicateCwdWarnings,
   ensureIpcDir,
@@ -856,12 +1009,15 @@ module.exports = {
   formatCandidateList,
   formatMailboxNotice,
   formatNoticeWithControls,
+  getFrontmostAppName,
   getProcessCommand,
   isAllowedBridgeSocketPath,
   isExpectedDaemonProcess,
   isProcessAlive,
+  maybeFocusSession,
   newMessageId,
   normalizeBridgePolicy,
+  normalizeFocusPolicy,
   openSecureFile,
   openSupacodeTab,
   pruneDeadSessions,
@@ -875,6 +1031,7 @@ module.exports = {
   sanitizeSessionForDisplay,
   secureWriteFile,
   sendToSocket,
+  shouldFocusSession,
   truncateContent,
   unregisterSession,
   validateBridgeMessage,

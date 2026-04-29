@@ -281,8 +281,18 @@ function resolveRosterTarget(alias: string, roster: BridgeRoster, excludePid?: n
 
 // ─── Supacode helpers ────────────────────────────────────────────────────────
 
-function focusSupacodeTab(session: RegistryEntry): void {
-	bridgeCore.openSupacodeTab(session);
+function maybeFocusSession(session: RegistryEntry): any {
+	const policy = bridgeCore.readBridgePolicy(BRIDGE_POLICY_FILE);
+	return bridgeCore.maybeFocusSession(session, policy);
+}
+
+function focusNotice(focus: any): string {
+	if (!focus) return "";
+	if (focus.focused) return " Focused target Supacode tab.";
+	if (focus.frontmostApp && /not allowed/i.test(String(focus.reason ?? ""))) {
+		return ` Focus skipped: frontmost app is ${safeText(focus.frontmostApp, 80)}.`;
+	}
+	return "";
 }
 
 // ─── Socket Transport ────────────────────────────────────────────────────────
@@ -579,9 +589,14 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const receipt = await sendToSocket(session.socketPath, msg);
-				focusSupacodeTab(session);
+				const focus = maybeFocusSession(session);
 				const safe = safeSession(session);
-				notifyCommand(ctx, `✉️  Sent to "${safe.name}"${safe.supacodeTabId ? " — focusing their tab" : ""}.${receiptSuffix(receipt)}`, receipt.acked ? "success" : "warning", "Transport ACK only means the recipient process accepted the message.");
+				notifyCommand(
+					ctx,
+					`✉️  Sent to "${safe.name}".${focusNotice(focus)}${receiptSuffix(receipt)}`,
+					receipt.acked ? "success" : "warning",
+					"Transport ACK only means the recipient process accepted the message.",
+				);
 			} catch (err) {
 				notifyCommand(ctx, `Failed to send to "${safeSession(session).name}": ${err}`, "error", "Run /bridge-ping <target> or /bridge-list to check the recipient.");
 			}
@@ -685,12 +700,13 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const receipt = await sendToSocket(session.socketPath, msg);
-				focusSupacodeTab(session);
+				const focus = maybeFocusSession(session);
 				const safe = safeSession(session);
 				notifyCommand(ctx, [
 					`✉️  /yo delivered to ${safeText(target.role, 200)} (${safe.name} pid:${session.pid}).`,
 					receipt.acked ? "Transport ACK received from recipient process." : receipt.warning,
 					behavior.isReply ? "No reply requested." : "Agent reply/ACK still depends on recipient behavior.",
+					focusNotice(focus),
 					warning ? `Warning: ${warning}` : "",
 					"Delivery receipt is not the same as human/agent completion.",
 				].filter(Boolean).join("\n"), receipt.acked ? "success" : "warning", "Use /bridge-mailbox to review held inbound messages.");
@@ -827,16 +843,16 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const receipt = await sendToSocket(session.socketPath, msg);
-				focusSupacodeTab(session);
+				const focus = maybeFocusSession(session);
 				const safe = safeSession(session);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Message delivered to "${safe.name}" (${safe.cwd}).${safe.supacodeTabId ? " Focused their Supacode tab." : ""}${receiptSuffix(receipt)}`,
+							text: `Message delivered to "${safe.name}" (${safe.cwd}).${focusNotice(focus)}${receiptSuffix(receipt)}`,
 						},
 					],
-					details: { to: safe.name, toCwd: safe.cwd, acked: receipt.acked, receipt: receipt.response },
+					details: { to: safe.name, toCwd: safe.cwd, acked: receipt.acked, receipt: receipt.response, focus },
 				};
 			} catch (err) {
 				return {
@@ -900,11 +916,16 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const receipt = await sendToSocket(session.socketPath, msg);
-				focusSupacodeTab(session);
+				const focus = maybeFocusSession(session);
 				const safe = safeSession(session);
 				return {
-					content: [{ type: "text", text: `Reply delivered to "${safe.name}" (${safe.cwd}).${safe.supacodeTabId ? " Focused their Supacode tab." : ""}${receiptSuffix(receipt)}` }],
-					details: { to: safe.name, toCwd: safe.cwd, acked: receipt.acked, receipt: receipt.response },
+					content: [
+						{
+							type: "text",
+							text: `Reply delivered to "${safe.name}" (${safe.cwd}).${focusNotice(focus)}${receiptSuffix(receipt)}`,
+						},
+					],
+					details: { to: safe.name, toCwd: safe.cwd, acked: receipt.acked, receipt: receipt.response, focus },
 				};
 			} catch (err) {
 				return {

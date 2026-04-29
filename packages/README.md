@@ -6,4 +6,4 @@ Each package should include its own README, tests, package manifest, and package
 
 Current package:
 
-- `pi-yo` — trusted-local inter-session messaging for Pi agents.
+- `pi-yo` — trusted-local inter-session messaging plus bundled coordination skill for Pi agents.

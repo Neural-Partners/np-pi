@@ -1,6 +1,6 @@
 {
   "name": "@neuralpartners/pi-yo",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Inter-terminal messaging for Pi agents and Claude Code sessions.",
   "keywords": [
     "pi-package",
@@ -17,6 +17,9 @@
   "pi": {
     "extensions": [
       "./extensions/pi-bridge.ts"
+    ],
+    "skills": [
+      "./skills"
     ],
     "image": "https://raw.githubusercontent.com/Neural-Partners/np-pi/main/packages/pi-yo/assets/pi-to-claude-code-flow.png"
   },

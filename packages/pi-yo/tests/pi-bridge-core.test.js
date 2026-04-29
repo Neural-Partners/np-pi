@@ -47,6 +47,48 @@ function sampleSupacodeSession(overrides = {}) {
   };
 }
 
+test("bridge visibility defaults to visible and only invisible hides a session", () => {
+  assert.equal(core.normalizeBridgeVisibility(undefined), "visible");
+  assert.equal(core.normalizeBridgeVisibility("visible"), "visible");
+  assert.equal(core.normalizeBridgeVisibility("invisible"), "invisible");
+  assert.equal(core.normalizeBridgeVisibility("hidden"), "visible");
+  assert.equal(core.isSessionVisible({ name: "legacy" }), true);
+  assert.equal(core.isSessionVisible({ name: "standby", bridgeVisibility: "invisible" }), false);
+});
+
+test("visibleSessions excludes invisible sessions without mutating the original list", () => {
+  const sessions = [
+    { pid: 111, name: "visible", cwd: "/workspace/app", socketPath: "/tmp/111.sock", startedAt: 1 },
+    { pid: 222, name: "standby", cwd: "/workspace/app", socketPath: "/tmp/222.sock", startedAt: 1, bridgeVisibility: "invisible" },
+  ];
+
+  const visible = core.visibleSessions(sessions);
+
+  assert.deepEqual(visible.map((session) => session.pid), [111]);
+  assert.equal(sessions.length, 2);
+});
+
+test("sanitizeSessionForDisplay includes normalized bridge visibility", () => {
+  const safeLegacy = core.sanitizeSessionForDisplay({
+    pid: 999,
+    name: "legacy",
+    cwd: "/tmp/project",
+    socketPath: "/tmp/999.sock",
+    startedAt: 1,
+  });
+  const safeInvisible = core.sanitizeSessionForDisplay({
+    pid: 1000,
+    name: "standby",
+    cwd: "/tmp/project",
+    socketPath: "/tmp/1000.sock",
+    startedAt: 1,
+    bridgeVisibility: "invisible",
+  });
+
+  assert.equal(safeLegacy.bridgeVisibility, "visible");
+  assert.equal(safeInvisible.bridgeVisibility, "invisible");
+});
+
 function captureOpener(calls) {
   return (cmd, args, options) => calls.push({ cmd, args, options });
 }

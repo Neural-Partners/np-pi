@@ -430,11 +430,25 @@ function sanitizeMetadata(value, maxBytes = DEFAULT_MAX_FIELD_BYTES) {
   return truncateToBytes(safe, maxBytes);
 }
 
+function normalizeBridgeVisibility(value) {
+  return value === "invisible" ? "invisible" : "visible";
+}
+
+function isSessionVisible(session) {
+  return normalizeBridgeVisibility(session && session.bridgeVisibility) !== "invisible";
+}
+
+function visibleSessions(sessions) {
+  if (!Array.isArray(sessions)) return [];
+  return sessions.filter(isSessionVisible);
+}
+
 function sanitizeSessionForDisplay(session) {
   const safe = {
     ...session,
     name: sanitizeMetadata(session && session.name, 200),
     cwd: sanitizeMetadata(session && session.cwd, 1000),
+    bridgeVisibility: normalizeBridgeVisibility(session && session.bridgeVisibility),
   };
   if (session && session.supacodeTabId !== undefined) safe.supacodeTabId = sanitizeMetadata(session.supacodeTabId, 128);
   if (session && session.supacodeWorktreeId !== undefined) safe.supacodeWorktreeId = sanitizeMetadata(session.supacodeWorktreeId, 256);
@@ -1014,9 +1028,11 @@ module.exports = {
   isAllowedBridgeSocketPath,
   isExpectedDaemonProcess,
   isProcessAlive,
+  isSessionVisible,
   maybeFocusSession,
   newMessageId,
   normalizeBridgePolicy,
+  normalizeBridgeVisibility,
   normalizeFocusPolicy,
   openSecureFile,
   openSupacodeTab,
@@ -1035,6 +1051,7 @@ module.exports = {
   truncateContent,
   unregisterSession,
   validateBridgeMessage,
+  visibleSessions,
   withRegistryLock,
   writePidMetadata,
   writeRegistry,

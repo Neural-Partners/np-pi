@@ -315,9 +315,26 @@ function unregisterSession(pid, registryFile = DEFAULT_PATHS.registryFile) {
   }
 }
 
-function duplicateCwdWarnings(sessions) {
+function setSessionVisibility(pid, visibility, registryFile = DEFAULT_PATHS.registryFile) {
+  const normalized = normalizeBridgeVisibility(visibility);
+  return withRegistryLock(registryFile, () => {
+    const registry = readRegistry(registryFile);
+    const sessions = pruneDeadSessions(registry.sessions);
+    const entry = sessions.find((session) => Number(session.pid) === Number(pid));
+    if (!entry) {
+      writeRegistry({ sessions }, registryFile);
+      return { updated: false, visibility: normalized };
+    }
+    entry.bridgeVisibility = normalized;
+    writeRegistry({ sessions }, registryFile);
+    return { updated: true, visibility: normalized, session: entry };
+  });
+}
+
+function duplicateCwdWarnings(sessions, options = {}) {
   const byCwd = new Map();
-  for (const session of sessions) {
+  const checkedSessions = options.includeInvisible ? sessions : visibleSessions(sessions);
+  for (const session of checkedSessions) {
     const list = byCwd.get(session.cwd) || [];
     list.push(session);
     byCwd.set(session.cwd, list);
@@ -342,16 +359,17 @@ function cwdEndsWithSegment(cwd, query) {
   return normalizedCwd === normalizedQuery || normalizedCwd.endsWith(`/${normalizedQuery}`);
 }
 
-function resolveSessionTarget(query, sessions) {
+function resolveSessionTarget(query, sessions, options = {}) {
   const q = normalize(query);
   if (!q) return { status: "not_found", query, candidates: [] };
 
+  const nonPidSessions = options.includeInvisible ? sessions : visibleSessions(sessions);
   const buckets = [
     { kind: "pid", candidates: sessions.filter((session) => String(session.pid) === q) },
-    { kind: "exact-name", candidates: sessions.filter((session) => normalize(session.name) === q) },
-    { kind: "exact-cwd-basename", candidates: sessions.filter((session) => normalize(path.basename(session.cwd)) === q) },
-    { kind: "cwd-suffix", candidates: sessions.filter((session) => cwdEndsWithSegment(session.cwd, q)) },
-    { kind: "fuzzy-name", candidates: sessions.filter((session) => normalize(session.name).includes(q)) },
+    { kind: "exact-name", candidates: nonPidSessions.filter((session) => normalize(session.name) === q) },
+    { kind: "exact-cwd-basename", candidates: nonPidSessions.filter((session) => normalize(path.basename(session.cwd)) === q) },
+    { kind: "cwd-suffix", candidates: nonPidSessions.filter((session) => cwdEndsWithSegment(session.cwd, q)) },
+    { kind: "fuzzy-name", candidates: nonPidSessions.filter((session) => normalize(session.name).includes(q)) },
   ];
 
   for (const bucket of buckets) {
@@ -1047,6 +1065,7 @@ module.exports = {
   sanitizeSessionForDisplay,
   secureWriteFile,
   sendToSocket,
+  setSessionVisibility,
   shouldFocusSession,
   truncateContent,
   unregisterSession,

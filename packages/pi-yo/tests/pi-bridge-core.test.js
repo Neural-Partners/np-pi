@@ -33,6 +33,24 @@ function sampleMessage(overrides = {}) {
   };
 }
 
+function sampleSupacodeSession(overrides = {}) {
+  return {
+    pid: 22222,
+    name: "target",
+    cwd: "/tmp/target",
+    socketPath: "/tmp/target.sock",
+    startedAt: 1,
+    supacodeWorktreeId: "worktree-123_%2Fsafe",
+    supacodeTabId: "tab_456",
+    supacodeSurfaceId: "surface_789",
+    ...overrides,
+  };
+}
+
+function captureOpener(calls) {
+  return (cmd, args, options) => calls.push({ cmd, args, options });
+}
+
 async function withSocketServer(handler, run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pbc-"));
   const socketPath = path.join(dir, "bridge.sock");
@@ -239,6 +257,167 @@ test("bridge policy routes non-allowlisted senders to mailbox", () => {
 
   const mailboxOnly = core.normalizeBridgePolicy({ mode: "mailbox-only" });
   assert.equal(core.decideMessageDelivery(sampleMessage({ fromName: "trusted" }), mailboxOnly).action, "mailbox");
+});
+
+test("bridge policy defaults include smart focus policy", () => {
+  const policy = core.normalizeBridgePolicy({
+    mode: "auto-inject",
+    allowlist: [],
+    rateLimit: { perSenderPer10s: 5 },
+  });
+
+  assert.equal(policy.focus.mode, "smart");
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Supacode"));
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Sublime Text"));
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Antigravity"));
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Kiro"));
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Windsurf"));
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Claude Desktop"));
+  assert.ok(policy.focus.allowedFrontmostApps.includes("Codex"));
+});
+
+test("focus mode never skips valid Supacode targets", () => {
+  const calls = [];
+  const result = core.maybeFocusSession(
+    sampleSupacodeSession(),
+    {
+      focus: { mode: "never" },
+    },
+    {
+      frontmostAppName: "Supacode",
+      opener: captureOpener(calls),
+    },
+  );
+
+  assert.equal(result.focused, false);
+  assert.match(result.reason, /never/i);
+  assert.equal(calls.length, 0);
+});
+
+test("focus mode always opens valid Supacode targets regardless of frontmost app", () => {
+  const calls = [];
+  const result = core.maybeFocusSession(
+    sampleSupacodeSession(),
+    {
+      focus: { mode: "always" },
+    },
+    {
+      frontmostAppName: "Google Chrome",
+      opener: captureOpener(calls),
+    },
+  );
+
+  assert.equal(result.focused, true);
+  assert.match(result.reason, /always/i);
+  assert.deepEqual(calls, [
+    {
+      cmd: "open",
+      args: ["supacode://worktree/worktree-123_%2Fsafe/tab/tab_456"],
+      options: { stdio: "ignore" },
+    },
+  ]);
+});
+
+test("smart focus opens when the frontmost app is in the dev allowlist", () => {
+  const allowedApps = [
+    "Supacode",
+    "Terminal",
+    "iTerm2",
+    "Warp",
+    "Ghostty",
+    "WezTerm",
+    "Cursor",
+    "Visual Studio Code",
+    "Code",
+    "Zed",
+    "Sublime Text",
+    "Antigravity",
+    "Kiro",
+    "Windsurf",
+    "WebStorm",
+    "IntelliJ IDEA",
+    "Claude",
+    "Claude Desktop",
+    "Codex",
+  ];
+
+  for (const app of allowedApps) {
+    const calls = [];
+    const result = core.maybeFocusSession(
+      sampleSupacodeSession(),
+      {
+        focus: { mode: "smart" },
+      },
+      {
+        frontmostAppName: app,
+        opener: captureOpener(calls),
+      },
+    );
+
+    assert.equal(result.focused, true, `${app} should allow focus`);
+    assert.equal(result.frontmostApp, app);
+    assert.equal(calls.length, 1, `${app} should call opener once`);
+  }
+});
+
+test("smart focus skips when the frontmost app is not in the dev allowlist", () => {
+  const calls = [];
+  const result = core.maybeFocusSession(
+    sampleSupacodeSession(),
+    {
+      focus: { mode: "smart" },
+    },
+    {
+      frontmostAppName: "Google Chrome",
+      opener: captureOpener(calls),
+    },
+  );
+
+  assert.equal(result.focused, false);
+  assert.equal(result.frontmostApp, "Google Chrome");
+  assert.match(result.reason, /not allowed/i);
+  assert.equal(calls.length, 0);
+});
+
+test("smart focus skips when frontmost app detection fails", () => {
+  const calls = [];
+  const result = core.maybeFocusSession(
+    sampleSupacodeSession(),
+    {
+      focus: { mode: "smart" },
+    },
+    {
+      frontmostAppProvider: () => {
+        throw new Error("no accessibility permission");
+      },
+      opener: captureOpener(calls),
+    },
+  );
+
+  assert.equal(result.focused, false);
+  assert.match(result.reason, /unavailable/i);
+  assert.equal(calls.length, 0);
+});
+
+test("smart focus skips sessions without Supacode focus metadata", () => {
+  const calls = [];
+  const result = core.maybeFocusSession(
+    sampleSupacodeSession({
+      supacodeWorktreeId: undefined,
+      supacodeTabId: undefined,
+    }),
+    {
+      focus: { mode: "smart" },
+    },
+    {
+      frontmostAppName: "Supacode",
+      opener: captureOpener(calls),
+    },
+  );
+
+  assert.equal(result.focused, false);
+  assert.match(result.reason, /no focus metadata/i);
+  assert.equal(calls.length, 0);
 });
 
 test("sender rate limiter caps bursts per sender window", () => {

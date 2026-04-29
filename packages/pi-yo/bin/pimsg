@@ -20,8 +20,26 @@ function die(msg, code = 1) {
   process.exit(code);
 }
 
-function focusSupacodeTab(session) {
-  core.openSupacodeTab(session);
+const os = require("node:os");
+const BRIDGE_POLICY_FILE = path.join(
+  os.homedir(),
+  ".pi",
+  "agent",
+  "bridge-policy.json",
+);
+
+function maybeFocusSession(session) {
+  const policy = core.readBridgePolicy(BRIDGE_POLICY_FILE);
+  return core.maybeFocusSession(session, policy);
+}
+
+function focusSuffix(focus) {
+  if (!focus) return "";
+  if (focus.focused) return " — focused their tab";
+  if (focus.frontmostApp && /not allowed/i.test(focus.reason || "")) {
+    return ` — focus skipped: ${safeText(focus.frontmostApp, 80)} is frontmost`;
+  }
+  return "";
 }
 
 function safeText(value, maxBytes = 500) {
@@ -109,6 +127,7 @@ async function main() {
       fix,
       extraFiles: [
         path.join(require("node:os").homedir(), ".pi", "agent", "bridge-roster.json"),
+        path.join(require("node:os").homedir(), ".pi", "agent", "bridge-policy.json"),
         path.join(require("node:os").homedir(), ".pi", "agent", "tool-usage.jsonl"),
       ],
     });
@@ -172,11 +191,12 @@ async function main() {
 
   try {
     const receipt = await core.sendToSocket(session.socketPath, message);
-    focusSupacodeTab(session);
+    const focus = maybeFocusSession(session);
     const safe = safeSession(session);
-    const sc = safe.supacodeTabId ? " — focused their tab" : "";
     const ack = receipt.acked ? " — ACK received" : ` — delivered, but ${receipt.warning}`;
-    console.log(`✓ ${verb} to "${safe.name}" (${safe.cwd})${sc}${ack}`);
+    console.log(
+      `✓ ${verb} to "${safe.name}" (${safe.cwd})${focusSuffix(focus)}${ack}`,
+    );
   } catch (err) {
     die(`✗ Failed to deliver to "${safeSession(session).name}": ${err.message}`);
   }

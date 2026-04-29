@@ -11,9 +11,9 @@ Neural Partners' public home for Pi packages, extensions, skills, prompts, theme
 
 ## Current public packages
 
-| Package                 | Purpose                                              | Install                                |
-| ----------------------- | ---------------------------------------------------- | -------------------------------------- |
-| `@neuralpartners/pi-yo` | Trusted-local inter-session messaging for Pi agents. | `pi install npm:@neuralpartners/pi-yo` |
+| Package                 | Purpose                                                                              | Install                                |
+| ----------------------- | ------------------------------------------------------------------------------------ | -------------------------------------- |
+| `@neuralpartners/pi-yo` | Trusted-local inter-session messaging plus bundled coordination skill for Pi agents. | `pi install npm:@neuralpartners/pi-yo` |
 
 See each package's README for package-specific usage, license, and verification details.
 

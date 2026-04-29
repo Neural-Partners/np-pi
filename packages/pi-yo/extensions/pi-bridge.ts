@@ -834,12 +834,14 @@ export default function (pi: ExtensionAPI) {
 				const visibility = getSessionVisibility(currentRegistryEntry());
 				return {
 					content: [{ type: "text", text: visibilityStatusLine(visibility, myPid) }],
-					details: { visibility, pid: myPid },
+					details: { visibility, pid: myPid, updated: false },
 				};
 			}
 			if (requested !== "visible" && requested !== "invisible") {
+				const visibility = getSessionVisibility(currentRegistryEntry());
 				return {
 					content: [{ type: "text", text: "visibility must be 'visible', 'invisible', or 'status'." }],
+					details: { visibility, pid: myPid, updated: false },
 					isError: true,
 				};
 			}
@@ -871,7 +873,7 @@ export default function (pi: ExtensionAPI) {
 							text: "No other Pi sessions are currently running. Ask the user to start another pi session in a separate terminal.",
 						},
 					],
-					details: { sessions: [] },
+					details: { sessions: [] as RegistryEntry[], duplicateWarnings: [] as string[] },
 				};
 			}
 
@@ -1029,6 +1031,7 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: `Failed to deliver reply to "${safeSession(session).name}": ${err}` }],
 					isError: true,
+					details: { target: safeText(params.target, 200), error: String(err) },
 				};
 			}
 		},

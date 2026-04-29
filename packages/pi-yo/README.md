@@ -10,8 +10,8 @@ Source repository: <https://github.com/Neural-Partners/np-pi/tree/main/packages/
 
 `pi-yo` lets local Pi sessions discover each other and send JSONL messages over owner-only Unix sockets. It provides:
 
-- Pi LLM tools: `list_sessions`, `send_to_session`, `reply_to_session`
-- slash commands: `/bridge-list`, `/bridge-send`, `/bridge-mailbox`, `/bridge-ping`, `/yo`
+- Pi LLM tools: `list_sessions`, `set_session_visibility`, `send_to_session`, `reply_to_session`
+- slash commands: `/bridge-list`, `/bridge-visibility`, `/bridge-send`, `/bridge-mailbox`, `/bridge-ping`, `/yo`
 - CLI helpers: `pimsg`, `pi-cc-bridge`
 - transport receipts: `ACK received` / `pong` from the recipient process
 
@@ -28,7 +28,7 @@ Transport ACK means the recipient process validated and accepted the frame for i
 
 ## Bundled Pi skill
 
-This package includes the `pi-yo` skill. When installed, Pi can load it for inter-session coordination workflows: discover peers with `list_sessions`, send new handoffs with `send_to_session`, and answer inbound bridge messages with `reply_to_session` to avoid reply loops.
+This package includes the `pi-yo` skill. When installed, Pi can load it for inter-session coordination workflows: discover peers with `list_sessions`, hide/reveal the current Pi session with `set_session_visibility`, send new handoffs with `send_to_session`, and answer inbound bridge messages with `reply_to_session` to avoid reply loops.
 
 ## Screenshots
 
@@ -142,6 +142,39 @@ Focus config lives in `~/.pi/agent/bridge-policy.json`:
 
 In v1, only Supacode targets can be focused because the bridge registry currently stores Supacode tab/worktree IDs. IDE names in `allowedFrontmostApps` mean "it is OK to focus a Supacode target while this app is frontmost"; they do not yet focus Cursor, VS Code, Windsurf, Kiro, or other IDE windows as targets.
 
+## Invisible sessions
+
+A Pi agent can make its own bridge session invisible when duplicate session names or standby terminals would confuse discovery.
+
+Soft-invisible behavior:
+
+- hidden from `list_sessions`, `/bridge-list`, `/yo list`, and `pimsg list`
+- ignored for normal name, cwd, and fuzzy target resolution
+- still reachable by Exact PID as a manual escape hatch
+- still able to send outbound messages normally
+
+Human command:
+
+```bash
+/bridge-visibility status
+/bridge-visibility invisible
+/bridge-visibility visible
+```
+
+Agent tool:
+
+```txt
+set_session_visibility({ "visibility": "invisible" | "visible" | "status" })
+```
+
+CLI diagnostics:
+
+```bash
+pimsg list --all
+```
+
+`pimsg list --all` includes invisible sessions and labels them with `[invisible]`. Use Exact PID if you intentionally need to message an invisible session.
+
 ## Install
 
 From Pi:
@@ -185,6 +218,7 @@ Mailbox behavior:
 
 ```bash
 pimsg list
+pimsg list --all
 pimsg <target> "message"
 pimsg --reply <target> "reply"
 pimsg doctor --fix

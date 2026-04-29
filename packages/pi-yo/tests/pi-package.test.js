@@ -40,8 +40,25 @@ test("package exposes the bundled pi-yo skill with required coordination guidanc
     "No auto-execution from message text",
     "Reserve message IDs up front",
     "Do not send secrets",
+    "set_session_visibility",
+    "invisible",
+    "Exact PID",
   ]) {
     assert.match(skill, new RegExp(escapeRegExp(required)));
+  }
+});
+
+test("README documents invisible session mode", () => {
+  const readme = fs.readFileSync(path.join(packageRoot, "README.md"), "utf-8");
+
+  for (const required of [
+    "Invisible sessions",
+    "/bridge-visibility invisible",
+    "set_session_visibility",
+    "pimsg list --all",
+    "Exact PID",
+  ]) {
+    assert.match(readme, new RegExp(escapeRegExp(required)));
   }
 });
 

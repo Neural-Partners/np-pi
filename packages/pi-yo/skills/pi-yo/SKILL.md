@@ -27,10 +27,11 @@ Do not use it when there is no meaningful target session, when a normal final an
 
 1. If the target is not exact or context is stale, run `list_sessions` first.
 2. Target by exact PID, cwd, or role alias. Treat fuzzy names as hints only. If duplicate cwd warnings appear, prefer PID or exact name.
-3. For new outbound coordination, use `send_to_session`.
-4. For replies to inbound messages, use `reply_to_session` instead of `send_to_session`.
-5. If the inbound message is already marked as a reply, do not reply again unless the user explicitly asks or there is a safety-critical correction.
-6. Tell the user what was sent and whether the delivery receipt was ACKed.
+3. Use `set_session_visibility` when the user asks this Pi agent to go invisible, hide from bridge discovery, become visible again, or report visibility. Invisible is soft: the session is hidden from normal discovery/name/cwd/fuzzy targeting, but Exact PID targeting still works. Do not hide another session.
+4. For new outbound coordination, use `send_to_session`.
+5. For replies to inbound messages, use `reply_to_session` instead of `send_to_session`.
+6. If the inbound message is already marked as a reply, do not reply again unless the user explicitly asks or there is a safety-critical correction.
+7. Tell the user what was sent and whether the delivery receipt was ACKed.
 
 ## Message Template
 
@@ -76,15 +77,17 @@ If a message is urgent and no response comes back, ask the user before escalatin
 
 When the human asks for manual coordination, reference these commands:
 
-| Need                   | Command                                                              |
-| ---------------------- | -------------------------------------------------------------------- |
-| List active sessions   | `/bridge-list` or `pimsg list`                                       |
-| Send a manual message  | `/bridge-send <target> <message>` or `pimsg <target> "message"`      |
-| Reply manually         | `pimsg --reply <target> "reply"`                                     |
-| Check session liveness | `/bridge-ping <target>`                                              |
-| Review Pi mailbox      | `/bridge-mailbox`                                                    |
-| Use roster aliases     | `/yo list`, then `/yo -<target> [-<source>] [-<behavior>] <message>` |
-| Bridge Claude Code     | `pi-cc-bridge start`, `pi-cc-bridge mailbox`, `pi-cc-bridge stop`    |
+| Need                           | Command                                                              |
+| ------------------------------ | -------------------------------------------------------------------- |
+| List active sessions           | `/bridge-list` or `pimsg list`                                       |
+| Include invisible sessions     | `pimsg list --all`                                                   |
+| Hide/reveal current Pi session | `/bridge-visibility invisible` or `/bridge-visibility visible`       |
+| Send a manual message          | `/bridge-send <target> <message>` or `pimsg <target> "message"`      |
+| Reply manually                 | `pimsg --reply <target> "reply"`                                     |
+| Check session liveness         | `/bridge-ping <target>`                                              |
+| Review Pi mailbox              | `/bridge-mailbox`                                                    |
+| Use roster aliases             | `/yo list`, then `/yo -<target> [-<source>] [-<behavior>] <message>` |
+| Bridge Claude Code             | `pi-cc-bridge start`, `pi-cc-bridge mailbox`, `pi-cc-bridge stop`    |
 
 ## Common Mistakes
 
@@ -99,8 +102,10 @@ When the human asks for manual coordination, reference these commands:
 ## Quick Reference
 
 - Discover peers: `list_sessions`
+- Hide/reveal this Pi session: `set_session_visibility`
 - New handoff/FYI/request: `send_to_session`
 - Response to inbound message: `reply_to_session`
+- Invisible sessions: hidden from normal discovery/name/cwd/fuzzy targeting; Exact PID still works
 - Duplicate target warning: use exact PID, cwd, or role alias
 - Receipt language: "delivered/ACKed" only means transport accepted it
 - Coordination envelope: include `runId`, `msgId`, `replyTo`, roles, type, status, paths, summary, blockers, and reply expectation

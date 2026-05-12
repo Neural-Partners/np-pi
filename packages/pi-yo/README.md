@@ -177,6 +177,8 @@ pimsg list --all
 
 ## Retained inbox
 
+For Claude Code/iTerm orchestrator sessions, prefer the retained inbox over the legacy mailbox.
+
 Accepted bridge messages are appended to an owner-only retained event journal at `~/.pi/agent/ipc/bridge-events.jsonl`. Each reader has its own cursor in `~/.pi/agent/ipc/bridge-cursors.json`, so one consumer reading messages does not erase them for everyone else.
 
 Claude Code hook usage:
@@ -189,6 +191,26 @@ pi-cc-bridge inbox --format hook --consume
 - `--format hook` emits Claude hook JSON with `additionalContext`.
 - `--consume` advances only the `pi-cc-bridge` reader cursor after output.
 - Legacy `pi-cc-bridge mailbox` still works, but retained inbox is the safer path for cross-vendor delivery.
+
+Claude Code hook snippet:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.pi/agent/bin/pi-cc-bridge inbox --format hook --consume || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Session state
 
@@ -210,7 +232,18 @@ pi-cc-bridge state <target>
 pi-cc-bridge state --all
 ```
 
-State reports include PID, cwd, visibility, heartbeat age, self-reported status/task/blocker, and git branch/dirty/head summary when the session cwd is a git repo.
+State reports include PID, cwd, visibility, heartbeat age, self-reported status/task/blocker, and git branch/dirty/head summary when the session cwd is a git repo. This is a coordination aid, not proof that tests passed; verify claims against repo state before risky changes.
+
+## Local shim diagnostics
+
+If `pimsg` on PATH comes from `~/.pi/agent/bin`, it can lag the installed npm package. Check and repair explicitly:
+
+```bash
+pimsg doctor
+pimsg doctor --sync-shims
+```
+
+`--sync-shims` copies the installed package's `pimsg`, `pi-cc-bridge`, and `pi-bridge-core.js` into `~/.pi/agent`. It is never run automatically.
 
 ## Install
 
@@ -257,14 +290,18 @@ Mailbox behavior:
 pimsg list
 pimsg list --all
 pimsg list --with-status
-pimsg state <target|--all>
+pimsg state <target>
+pimsg state --all
 pimsg <target> "message"
 pimsg --reply <target> "reply"
 pimsg doctor --fix
+pimsg doctor --sync-shims
 
 pi-cc-bridge start
+pi-cc-bridge inbox
 pi-cc-bridge inbox --format hook --consume
-pi-cc-bridge state <target|--all>
+pi-cc-bridge state <target>
+pi-cc-bridge state --all
 pi-cc-bridge mailbox
 pi-cc-bridge stop
 ```

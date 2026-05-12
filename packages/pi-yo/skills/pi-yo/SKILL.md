@@ -27,11 +27,13 @@ Do not use it when there is no meaningful target session, when a normal final an
 
 1. If the target is not exact or context is stale, run `list_sessions` first.
 2. Target by exact PID, cwd, or role alias. Treat fuzzy names as hints only. If duplicate cwd warnings appear, prefer PID or exact name.
-3. Use `set_session_visibility` when the user asks this Pi agent to go invisible, hide from bridge discovery, become visible again, or report visibility. Invisible is soft: the session is hidden from normal discovery/name/cwd/fuzzy targeting, but Exact PID targeting still works. Do not hide another session.
-4. For new outbound coordination, use `send_to_session`.
-5. For replies to inbound messages, use `reply_to_session` instead of `send_to_session`.
-6. If the inbound message is already marked as a reply, do not reply again unless the user explicitly asks or there is a safety-critical correction.
-7. Tell the user what was sent and whether the delivery receipt was ACKed.
+3. Use `update_session_status` when accepting work, becoming blocked, entering review, completing work, or going idle. Set status=working when you start owned work. Set status=done when you finish and have verification evidence. Keep status short and secret-free.
+4. Before dispatching implementation or review work, use `pimsg state <target>` / `pimsg list --with-status` context or ask the target for current state if bridge state is stale.
+5. Use `set_session_visibility` when the user asks this Pi agent to go invisible, hide from bridge discovery, become visible again, or report visibility. Invisible is soft: the session is hidden from normal discovery/name/cwd/fuzzy targeting, but Exact PID targeting still works. Do not hide another session.
+6. For new outbound coordination, use `send_to_session`.
+7. For replies to inbound messages, use `reply_to_session` instead of `send_to_session`.
+8. If the inbound message is already marked as a reply, do not reply again unless the user explicitly asks or there is a safety-critical correction.
+9. Tell the user what was sent and whether the delivery receipt was ACKed.
 
 ## Message Template
 
@@ -69,7 +71,8 @@ ACK means transport accepted the message. Separate transport ACK from task ACK: 
 Messages can be held instead of auto-injected when bridge policy uses mailbox-only mode, allowlists, size caps, sanitized rendering, or rate limits. Human review commands:
 
 - `/bridge-mailbox` reviews held inbound messages in Pi. Opening the mailbox reads and clears it.
-- `pi-cc-bridge mailbox` prints held Claude Code bridge messages.
+- `pi-cc-bridge inbox --format hook --consume` reads the retained inbox for Claude Code hook delivery without deleting journal history.
+- `pi-cc-bridge mailbox` prints held Claude Code bridge messages; this legacy path is read-and-clear.
 
 If a message is urgent and no response comes back, ask the user before escalating or retrying repeatedly.
 
@@ -85,23 +88,29 @@ When the human asks for manual coordination, reference these commands:
 | Send a manual message          | `/bridge-send <target> <message>` or `pimsg <target> "message"`      |
 | Reply manually                 | `pimsg --reply <target> "reply"`                                     |
 | Check session liveness         | `/bridge-ping <target>`                                              |
+| Check peer state before work   | `pimsg state <target>` or `pimsg list --with-status`                 |
 | Review Pi mailbox              | `/bridge-mailbox`                                                    |
 | Use roster aliases             | `/yo list`, then `/yo -<target> [-<source>] [-<behavior>] <message>` |
-| Bridge Claude Code             | `pi-cc-bridge start`, `pi-cc-bridge mailbox`, `pi-cc-bridge stop`    |
+| Bridge Claude Code             | `pi-cc-bridge start`, `pi-cc-bridge inbox --format hook --consume`   |
 
 ## Common Mistakes
 
-| Mistake                         | Better                                                                                          |
-| ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Replying with `send_to_session` | Use `reply_to_session` for inbound messages to prevent loops.                                   |
-| Sending to an ambiguous cwd     | Run `list_sessions`; target exact PID, cwd, or role alias.                                      |
-| Treating ACK as completion      | Separate transport ACK from task ACK; wait for `ack`, `deliverable`, `blocker`, or `qa-result`. |
-| Sending huge logs               | Send the relevant excerpt, path, and command to reproduce.                                      |
-| Sending secrets                 | Do not send secrets. Ask the user for a safe handoff path instead.                              |
+| Mistake                                       | Better                                                                                          |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Replying with `send_to_session`               | Use `reply_to_session` for inbound messages to prevent loops.                                   |
+| Sending to an ambiguous cwd                   | Run `list_sessions`; target exact PID, cwd, or role alias.                                      |
+| Treating ACK as completion                    | Separate transport ACK from task ACK; wait for `ack`, `deliverable`, `blocker`, or `qa-result`. |
+| Sending huge logs                             | Send the relevant excerpt, path, and command to reproduce.                                      |
+| Sending secrets                               | Do not send secrets. Ask the user for a safe handoff path instead.                              |
+| Letting status rot                            | Call `update_session_status` at dispatch start, blocked, review, done, and idle transitions.    |
+| Using read-and-clear mailbox for orchestrator | Use retained inbox hook: `pi-cc-bridge inbox --format hook --consume`.                          |
 
 ## Quick Reference
 
 - Discover peers: `list_sessions`
+- Update current work state: `update_session_status`
+- Check a peer before dispatch: `pimsg state <target>` or `pimsg list --with-status`
+- Claude Code retained inbox: `pi-cc-bridge inbox --format hook --consume`
 - Hide/reveal this Pi session: `set_session_visibility`
 - New handoff/FYI/request: `send_to_session`
 - Response to inbound message: `reply_to_session`

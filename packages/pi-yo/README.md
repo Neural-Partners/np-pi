@@ -10,7 +10,7 @@ Source repository: <https://github.com/Neural-Partners/np-pi/tree/main/packages/
 
 `pi-yo` lets local Pi sessions discover each other and send JSONL messages over owner-only Unix sockets. It provides:
 
-- Pi LLM tools: `list_sessions`, `set_session_visibility`, `send_to_session`, `reply_to_session`
+- Pi LLM tools: `list_sessions`, `set_session_visibility`, `update_session_status`, `send_to_session`, `reply_to_session`
 - slash commands: `/bridge-list`, `/bridge-visibility`, `/bridge-send`, `/bridge-mailbox`, `/bridge-ping`, `/yo`
 - CLI helpers: `pimsg`, `pi-cc-bridge`
 - transport receipts: `ACK received` / `pong` from the recipient process
@@ -175,6 +175,43 @@ pimsg list --all
 
 `pimsg list --all` includes invisible sessions and labels them with `[invisible]`. Use Exact PID if you intentionally need to message an invisible session.
 
+## Retained inbox
+
+Accepted bridge messages are appended to an owner-only retained event journal at `~/.pi/agent/ipc/bridge-events.jsonl`. Each reader has its own cursor in `~/.pi/agent/ipc/bridge-cursors.json`, so one consumer reading messages does not erase them for everyone else.
+
+Claude Code hook usage:
+
+```bash
+pi-cc-bridge inbox --format hook --consume
+```
+
+- `pi-cc-bridge inbox` prints unread retained messages for the current Claude Code checkout.
+- `--format hook` emits Claude hook JSON with `additionalContext`.
+- `--consume` advances only the `pi-cc-bridge` reader cursor after output.
+- Legacy `pi-cc-bridge mailbox` still works, but retained inbox is the safer path for cross-vendor delivery.
+
+## Session state
+
+Agents can self-report orchestrator-friendly state with the Pi tool:
+
+```txt
+update_session_status({ "status": "working", "currentTask": "implement auth tests", "dispatchId": "dispatch-123" })
+```
+
+Status values are `idle`, `working`, `blocked`, `review`, `done`, and `unknown`. The bridge also records session heartbeat metadata so orchestrators can see whether a target process is alive/recent.
+
+CLI state commands:
+
+```bash
+pimsg list --with-status
+pimsg state <target>
+pimsg state --all
+pi-cc-bridge state <target>
+pi-cc-bridge state --all
+```
+
+State reports include PID, cwd, visibility, heartbeat age, self-reported status/task/blocker, and git branch/dirty/head summary when the session cwd is a git repo.
+
 ## Install
 
 From Pi:
@@ -219,11 +256,15 @@ Mailbox behavior:
 ```bash
 pimsg list
 pimsg list --all
+pimsg list --with-status
+pimsg state <target|--all>
 pimsg <target> "message"
 pimsg --reply <target> "reply"
 pimsg doctor --fix
 
 pi-cc-bridge start
+pi-cc-bridge inbox --format hook --consume
+pi-cc-bridge state <target|--all>
 pi-cc-bridge mailbox
 pi-cc-bridge stop
 ```

@@ -62,6 +62,21 @@ test("README documents invisible session mode", () => {
   }
 });
 
+test("README documents retained inbox and state commands", () => {
+  const readme = fs.readFileSync(path.join(packageRoot, "README.md"), "utf-8");
+
+  for (const required of [
+    "Retained inbox",
+    "pi-cc-bridge inbox --format hook --consume",
+    "Session state",
+    "update_session_status",
+    "pimsg state",
+    "pi-cc-bridge state",
+  ]) {
+    assert.match(readme, new RegExp(escapeRegExp(required)));
+  }
+});
+
 test("extension exposes self visibility controls", () => {
   const extensionPath = path.join(packageRoot, "extensions", "pi-bridge.ts");
   const extension = fs.readFileSync(extensionPath, "utf-8");

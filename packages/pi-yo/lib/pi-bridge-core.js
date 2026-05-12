@@ -56,6 +56,9 @@ function buildPaths(home = os.homedir()) {
   return {
     ipcDir,
     registryFile: path.join(ipcDir, "registry.json"),
+    eventsFile: path.join(ipcDir, "bridge-events.jsonl"),
+    cursorsFile: path.join(ipcDir, "bridge-cursors.json"),
+    stateFile: path.join(ipcDir, "bridge-state.json"),
   };
 }
 
@@ -251,6 +254,9 @@ function bridgeOwnedIpcFile(fileName) {
   return (
     fileName === "registry.json" ||
     fileName === "registry.json.lock" ||
+    fileName === "bridge-events.jsonl" ||
+    fileName === "bridge-cursors.json" ||
+    fileName === "bridge-state.json" ||
     /^\d+\.sock$/.test(fileName) ||
     /^cc-[a-f0-9]{8}\.(sock|pid|mailbox|log|json)$/.test(fileName)
   );
@@ -798,6 +804,195 @@ function maybeFocusSession(session, policy = {}, options = {}) {
   };
 }
 
+function normalizeReaderKey(value) {
+  return sanitizeMetadata(value, 256).toLowerCase();
+}
+
+function sessionReaderKey(session) {
+  if (!session) return "unknown";
+  if (session.readerKey) return normalizeReaderKey(session.readerKey);
+  if (session.name && /\(CC\)$/.test(String(session.name))) {
+    return `cc:${crypto.createHash("sha256").update(String(session.cwd || "")).digest("hex").slice(0, 8)}`;
+  }
+  if (Number.isSafeInteger(session.pid) && session.pid > 0) return `pi:${session.pid}`;
+  return `cwd:${crypto.createHash("sha256").update(String(session.cwd || "unknown")).digest("hex").slice(0, 12)}`;
+}
+
+function newEventId(prefix = "evt") {
+  return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+function sanitizeBridgeParty(party = {}) {
+  return {
+    pid: Number.isSafeInteger(party.pid) && party.pid > 0 ? party.pid : undefined,
+    name: sanitizeMetadata(party.name, 200),
+    cwd: sanitizeMetadata(party.cwd, 2048),
+    readerKey: party.readerKey ? normalizeReaderKey(party.readerKey) : undefined,
+  };
+}
+
+function readBridgeEvents(options = {}) {
+  const eventsFile = options.eventsFile || DEFAULT_PATHS.eventsFile;
+  try {
+    assertNotSymlink(eventsFile);
+    const raw = fs.readFileSync(eventsFile, "utf-8");
+    const events = [];
+    let malformed = 0;
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && typeof parsed.eventId === "string") events.push(parsed);
+        else malformed += 1;
+      } catch {
+        malformed += 1;
+      }
+    }
+    if (options.withDiagnostics) return { events, malformed };
+    return events;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return options.withDiagnostics ? { events: [], malformed: 0 } : [];
+    throw err;
+  }
+}
+
+function appendBridgeEvent(input, options = {}) {
+  const eventsFile = options.eventsFile || DEFAULT_PATHS.eventsFile;
+  const now = Date.now();
+  const event = {
+    schemaVersion: 1,
+    eventId: input.eventId || newEventId(),
+    kind: input.kind || "message.accepted",
+    acceptedAt: Number.isFinite(input.acceptedAt) ? input.acceptedAt : now,
+    messageId: input.messageId ? sanitizeMetadata(input.messageId, 256) : undefined,
+    from: sanitizeBridgeParty(input.from),
+    to: sanitizeBridgeParty(input.to),
+    isReply: input.isReply === true,
+    dispatchId: input.dispatchId ? sanitizeMetadata(input.dispatchId, 256) : undefined,
+    content: input.content === undefined ? undefined : truncateContent(input.content).text,
+    contentBytes: input.content === undefined ? 0 : byteLength(String(input.content)),
+    duplicateOf: input.duplicateOf || null,
+  };
+  appendFileSecure(eventsFile, JSON.stringify(event) + "\n", {
+    maxBytes: options.maxBytes || DEFAULT_TOOL_USAGE_MAX_BYTES,
+    backups: options.backups || DEFAULT_TOOL_USAGE_BACKUPS,
+  });
+  return event;
+}
+
+function messageIdentityKey(eventOrMessage) {
+  const messageId = sanitizeMetadata((eventOrMessage && eventOrMessage.messageId) || (eventOrMessage && eventOrMessage.id), 256);
+  const fromPid = eventOrMessage && (eventOrMessage.fromPid || (eventOrMessage.from && eventOrMessage.from.pid));
+  const fromName = sanitizeMetadata(eventOrMessage && (eventOrMessage.fromName || (eventOrMessage.from && eventOrMessage.from.name)), 200);
+  return `${messageId}|${fromPid || "unknown"}|${fromName}`;
+}
+
+function findExistingMessageEvent(message, events) {
+  const key = messageIdentityKey(message);
+  return events.find((event) => event.kind === "message.accepted" && messageIdentityKey(event) === key);
+}
+
+function recordAcceptedBridgeMessage(options = {}) {
+  const message = ensureMessageId(options.message || {});
+  const eventsFile = options.eventsFile || DEFAULT_PATHS.eventsFile;
+  const existing = findExistingMessageEvent(message, readBridgeEvents({ eventsFile }));
+  const to = sanitizeBridgeParty(options.to || {});
+  if (!to.readerKey) to.readerKey = sessionReaderKey(to);
+  const event = appendBridgeEvent({
+    kind: existing ? "message.duplicate" : "message.accepted",
+    messageId: message.id,
+    from: { pid: message.fromPid, name: message.fromName, cwd: message.fromCwd },
+    to,
+    isReply: message.isReply === true,
+    dispatchId: message.dispatchId,
+    content: message.content,
+    duplicateOf: existing ? existing.eventId : null,
+    acceptedAt: message.timestamp,
+  }, { eventsFile });
+  return { duplicate: Boolean(existing), event };
+}
+
+function readBridgeCursors(cursorsFile = DEFAULT_PATHS.cursorsFile) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cursorsFile, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeBridgeCursors(cursors, cursorsFile = DEFAULT_PATHS.cursorsFile) {
+  secureWriteFile(cursorsFile, JSON.stringify(cursors || {}, null, 2));
+}
+
+function readInboxEvents(options = {}) {
+  const readerKey = normalizeReaderKey(options.readerKey);
+  const cursorsFile = options.cursorsFile || DEFAULT_PATHS.cursorsFile;
+  const eventsFile = options.eventsFile || DEFAULT_PATHS.eventsFile;
+  const cursors = readBridgeCursors(cursorsFile);
+  const cursor = cursors[readerKey] || { acceptedAt: 0, eventId: "" };
+  const allEvents = readBridgeEvents({ eventsFile });
+  const events = allEvents.filter((event) => {
+    const eventReader = normalizeReaderKey(event && event.to && event.to.readerKey);
+    if (eventReader !== readerKey) return false;
+    if (options.all === true) return true;
+    if ((event.acceptedAt || 0) > (cursor.acceptedAt || 0)) return true;
+    if ((event.acceptedAt || 0) === (cursor.acceptedAt || 0) && String(event.eventId) > String(cursor.eventId || "")) return true;
+    return false;
+  });
+  return { readerKey, events, cursorsFile, latest: events[events.length - 1] };
+}
+
+function consumeInboxEvents(inbox, options = {}) {
+  if (!inbox || !inbox.readerKey || !inbox.latest) return false;
+  const cursorsFile = options.cursorsFile || inbox.cursorsFile || DEFAULT_PATHS.cursorsFile;
+  const cursors = readBridgeCursors(cursorsFile);
+  cursors[inbox.readerKey] = {
+    acceptedAt: inbox.latest.acceptedAt || Date.now(),
+    eventId: inbox.latest.eventId,
+    consumedAt: Date.now(),
+  };
+  writeBridgeCursors(cursors, cursorsFile);
+  return true;
+}
+
+function formatBridgeTimestamp(value) {
+  const date = new Date(Number(value) || Date.now());
+  return date.toLocaleString();
+}
+
+function formatInboxEvents(events, options = {}) {
+  if (!Array.isArray(events) || events.length === 0) return "";
+  return events.map((event) => {
+    const sender = `${sanitizeMetadata(event.from && event.from.name, 200)} (${path.basename(sanitizeMetadata(event.from && event.from.cwd, 1000))})`;
+    if (event.kind === "message.duplicate") {
+      return `[duplicate] ${sanitizeMetadata(event.messageId, 256)} already seen at ${formatBridgeTimestamp(event.acceptedAt)} from ${sender}`;
+    }
+    const reply = event.isReply ? "  (reply)" : "";
+    return [
+      "---",
+      `📨 From: ${sender}  |  ${formatBridgeTimestamp(event.acceptedAt)}${reply}`,
+      event.messageId ? `Message-ID: ${sanitizeMetadata(event.messageId, 256)}` : "",
+      "",
+      String(event.content || ""),
+      "",
+      event.isReply ? "_This is a reply — no further reply needed._" : "_Please reply with reply_to_session or pimsg --reply after processing._",
+    ].filter((line) => line !== "").join("\n");
+  }).join("\n\n");
+}
+
+function formatInboxHookPayload(events) {
+  const formatted = formatInboxEvents(events).trim();
+  if (!formatted) return "";
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: `[pi-bridge inbox]\n${formatted}`,
+    },
+  }, null, 2);
+}
+
 function doctorIpcPermissions(options = {}) {
   const ipcDir = options.ipcDir || DEFAULT_PATHS.ipcDir;
   const fix = options.fix === true;
@@ -1024,11 +1219,13 @@ module.exports = {
   DEFAULT_TOOL_USAGE_BACKUPS,
   DEFAULT_TOOL_USAGE_MAX_BYTES,
   activeSessions,
+  appendBridgeEvent,
   appendFileSecure,
   buildPaths,
   buildSupacodeUrl,
   chmodSafe,
   collectJsonLines,
+  consumeInboxEvents,
   createSenderRateLimiter,
   createSocketResponse,
   decideMessageDelivery,
@@ -1038,7 +1235,10 @@ module.exports = {
   duplicateCwdWarnings,
   ensureIpcDir,
   ensureMessageId,
+  findExistingMessageEvent,
   formatCandidateList,
+  formatInboxEvents,
+  formatInboxHookPayload,
   formatMailboxNotice,
   formatNoticeWithControls,
   getFrontmostAppName,
@@ -1048,21 +1248,29 @@ module.exports = {
   isProcessAlive,
   isSessionVisible,
   maybeFocusSession,
+  messageIdentityKey,
+  newEventId,
   newMessageId,
   normalizeBridgePolicy,
   normalizeBridgeVisibility,
+  normalizeReaderKey,
   normalizeFocusPolicy,
   openSecureFile,
   openSupacodeTab,
   pruneDeadSessions,
   readAndClearFileAtomic,
+  readBridgeCursors,
+  readBridgeEvents,
   readBridgePolicy,
   readPidMetadata,
+  readInboxEvents,
   readRegistry,
+  recordAcceptedBridgeMessage,
   registerSession,
   resolveSessionTarget,
   sanitizeMetadata,
   sanitizeSessionForDisplay,
+  sessionReaderKey,
   secureWriteFile,
   sendToSocket,
   setSessionVisibility,
@@ -1072,6 +1280,7 @@ module.exports = {
   validateBridgeMessage,
   visibleSessions,
   withRegistryLock,
+  writeBridgeCursors,
   writePidMetadata,
   writeRegistry,
 };

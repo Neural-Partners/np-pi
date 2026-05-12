@@ -118,6 +118,122 @@ test("ensureIpcDir and writeRegistry use owner-only filesystem permissions", () 
   assert.equal(fileMode(paths.registryFile), 0o600);
 });
 
+test("bridge event journal appends owner-only JSONL events in order", () => {
+  const paths = core.buildPaths(tempHome());
+  const first = core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_a",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "pi:2" },
+    content: "first",
+    acceptedAt: 1000,
+  }, { eventsFile: paths.eventsFile });
+  const second = core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_b",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "pi:2" },
+    content: "second",
+    acceptedAt: 2000,
+  }, { eventsFile: paths.eventsFile });
+
+  assert.equal(fileMode(paths.eventsFile), 0o600);
+  const events = core.readBridgeEvents({ eventsFile: paths.eventsFile });
+  assert.deepEqual(events.map((event) => event.messageId), ["msg_a", "msg_b"]);
+  assert.match(first.eventId, /^evt_/);
+  assert.match(second.eventId, /^evt_/);
+});
+
+test("retained inbox consume advances only the selected reader cursor", () => {
+  const paths = core.buildPaths(tempHome());
+  core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_one",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:abcd1234" },
+    content: "one",
+    acceptedAt: 1000,
+  }, { eventsFile: paths.eventsFile });
+  core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_two",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:abcd1234" },
+    content: "two",
+    acceptedAt: 2000,
+  }, { eventsFile: paths.eventsFile });
+
+  const firstRead = core.readInboxEvents({
+    readerKey: "cc:abcd1234",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  assert.deepEqual(firstRead.events.map((event) => event.messageId), ["msg_one", "msg_two"]);
+
+  core.consumeInboxEvents(firstRead, { cursorsFile: paths.cursorsFile });
+
+  const secondRead = core.readInboxEvents({
+    readerKey: "cc:abcd1234",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  const otherReader = core.readInboxEvents({
+    readerKey: "cc:other",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+
+  assert.deepEqual(secondRead.events, []);
+  assert.deepEqual(otherReader.events, []);
+  assert.equal(fileMode(paths.cursorsFile), 0o600);
+});
+
+test("message duplicate detection labels repeated message ids", () => {
+  const paths = core.buildPaths(tempHome());
+  const first = core.recordAcceptedBridgeMessage({
+    message: sampleMessage({ id: "msg_same", fromPid: 777, fromName: "sender" }),
+    to: { pid: 888, name: "receiver", cwd: "/receiver", readerKey: "pi:888" },
+    eventsFile: paths.eventsFile,
+  });
+  const duplicate = core.recordAcceptedBridgeMessage({
+    message: sampleMessage({ id: "msg_same", fromPid: 777, fromName: "sender" }),
+    to: { pid: 888, name: "receiver", cwd: "/receiver", readerKey: "pi:888" },
+    eventsFile: paths.eventsFile,
+  });
+
+  assert.equal(first.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.event.kind, "message.duplicate");
+  assert.equal(duplicate.event.duplicateOf, first.event.eventId);
+
+  const inbox = core.readInboxEvents({ readerKey: "pi:888", eventsFile: paths.eventsFile });
+  const formatted = core.formatInboxEvents(inbox.events);
+  assert.match(formatted, /hello/);
+  assert.match(formatted, /\[duplicate\] msg_same already seen/);
+});
+
+test("formatInboxHookPayload emits Claude hook JSON only when content exists", () => {
+  assert.equal(core.formatInboxHookPayload([]), "");
+
+  const payload = core.formatInboxHookPayload([
+    {
+      eventId: "evt_1",
+      kind: "message.accepted",
+      messageId: "msg_one",
+      acceptedAt: 1000,
+      from: { pid: 1, name: "sender", cwd: "/repo/sender" },
+      to: { pid: 2, name: "receiver", cwd: "/repo/receiver", readerKey: "cc:abcd" },
+      content: "hello orchestrator",
+      isReply: true,
+    },
+  ]);
+
+  const parsed = JSON.parse(payload);
+  assert.equal(parsed.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(parsed.hookSpecificOutput.additionalContext, /^\[pi-bridge inbox\]/);
+  assert.match(parsed.hookSpecificOutput.additionalContext, /hello orchestrator/);
+});
+
 test("setSessionVisibility updates one live registry entry and preserves other sessions", () => {
   const paths = core.buildPaths(tempHome());
   core.writeRegistry({ sessions: [

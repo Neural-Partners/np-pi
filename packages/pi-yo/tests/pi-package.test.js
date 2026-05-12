@@ -76,3 +76,13 @@ test("extension exposes self visibility controls", () => {
     assert.match(extension, new RegExp(escapeRegExp(required)));
   }
 });
+
+test("package syntax script typechecks the Pi extension", () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(packageRoot, "package.json"), "utf-8"),
+  );
+
+  assert.match(packageJson.scripts.syntax, /tsc --noEmit/);
+  assert.match(packageJson.scripts.syntax, /extensions\/pi-bridge\.ts/);
+  assert.match(packageJson.scripts.syntax, /--moduleResolution NodeNext/);
+});

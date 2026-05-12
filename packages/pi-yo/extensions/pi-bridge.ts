@@ -341,6 +341,7 @@ export default function (pi: ExtensionAPI) {
 	const myMailboxFile = path.join(IPC_DIR, `${myPid}.mailbox`);
 	let server: net.Server | undefined;
 	let currentCtx: ExtensionContext | undefined;
+	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let myName = "";
 	let rateLimitSize = bridgeCore.DEFAULT_BRIDGE_POLICY.rateLimit.perSenderPer10s;
 	let senderRateLimiter = bridgeCore.createSenderRateLimiter({ limit: rateLimitSize, windowMs: 10_000 });
@@ -376,6 +377,27 @@ export default function (pi: ExtensionAPI) {
 
 	function readPolicy(): any {
 		return bridgeCore.readBridgePolicy(BRIDGE_POLICY_FILE);
+	}
+
+	function touchHeartbeat(): void {
+		try {
+			const registry = readRegistry();
+			const entry = registry.sessions.find((session) => session.pid === myPid);
+			if (entry) {
+				entry.name = myName || entry.name;
+				entry.readerKey = myReaderKey();
+				entry.lastHeartbeatAt = Date.now();
+				writeRegistry(registry);
+			}
+			if (currentCtx) {
+				bridgeCore.updateSessionStatus({
+					pid: myPid,
+					name: myName || getMyName(currentCtx),
+					cwd: currentCtx.cwd,
+					readerKey: myReaderKey(),
+				});
+			}
+		} catch {}
 	}
 
 	function checkSenderRateLimit(policy: any, msg: BridgeMessage): any {
@@ -539,6 +561,15 @@ export default function (pi: ExtensionAPI) {
 				supacodeSurfaceId: process.env.SUPACODE_SURFACE_ID,
 			}),
 		});
+		bridgeCore.updateSessionStatus({
+			pid: myPid,
+			name: myName,
+			cwd: ctx.cwd,
+			readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+			status: "idle",
+		});
+		heartbeatTimer = setInterval(touchHeartbeat, 30_000);
+		heartbeatTimer.unref?.();
 
 		if (ctx.hasUI) {
 			const sessions = getActiveSessions(myPid);
@@ -549,6 +580,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		unregisterSession(myPid);
 		server?.close();
 		try {
@@ -566,9 +598,12 @@ export default function (pi: ExtensionAPI) {
 			const entry = registry.sessions.find((s) => s.pid === myPid);
 			if (entry) {
 				entry.name = myName;
+				entry.readerKey = myReaderKey();
+				entry.lastHeartbeatAt = Date.now();
 				writeRegistry(registry);
 			}
 		}
+		touchHeartbeat();
 	});
 
 	// ── Commands (human-facing) ────────────────────────────────────────────
@@ -835,6 +870,57 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── LLM Tools ─────────────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "update_session_status",
+		label: "Update Pi Session Status",
+		description:
+			"Update this Pi agent session's self-reported bridge state for orchestrator visibility. " +
+			"Use this before/after dispatch work, when blocked, entering review, or completing a task.",
+		promptSnippet: "Update this session's bridge status for orchestrator state reports",
+		promptGuidelines: [
+			"Only update the current Pi session's status; do not modify other agents.",
+			"Use status values: idle, working, blocked, review, done, or unknown.",
+			"Include concise currentTask, blockedOn, dispatchId, and summary fields when useful for orchestrator visibility.",
+		],
+		parameters: Type.Object({
+			status: Type.String({
+				description: "Session status: idle, working, blocked, review, done, or unknown.",
+			}),
+			currentTask: Type.Optional(Type.String({ description: "Short description of current work." })),
+			dispatchId: Type.Optional(Type.String({ description: "Dispatch/ledger identifier if this work came from an orchestrator." })),
+			blockedOn: Type.Optional(Type.String({ description: "Blocker description. Use empty string when unblocked." })),
+			summary: Type.Optional(Type.String({ description: "Brief status summary for fleet/orchestrator reports." })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const normalized = bridgeCore.normalizeSessionStatus(String(params.status ?? "unknown"));
+			if (normalized === "unknown" && String(params.status ?? "unknown") !== "unknown") {
+				return {
+					content: [{ type: "text", text: "status must be idle, working, blocked, review, done, or unknown." }],
+					isError: true,
+					details: { status: params.status, pid: myPid },
+				};
+			}
+			currentCtx = ctx;
+			myName = getMyName(ctx);
+			const updated = bridgeCore.updateSessionStatus({
+				pid: myPid,
+				name: myName,
+				cwd: ctx.cwd,
+				readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+				status: normalized,
+				currentTask: params.currentTask,
+				dispatchId: params.dispatchId,
+				blockedOn: params.blockedOn,
+				summary: params.summary,
+			});
+			touchHeartbeat();
+			return {
+				content: [{ type: "text", text: `Session status updated: ${updated.status}${updated.currentTask ? ` — ${updated.currentTask}` : ""}` }],
+				details: updated,
+			};
+		},
+	});
 
 	pi.registerTool({
 		name: "set_session_visibility",

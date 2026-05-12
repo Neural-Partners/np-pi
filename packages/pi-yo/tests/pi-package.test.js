@@ -97,3 +97,14 @@ test("receivers record accepted messages and extension send paths ensure ids", (
   assert.match(extension, /ensureMessageId/);
   assert.match(extension, /readerKey: bridgeCore\.sessionReaderKey/);
 });
+
+test("extension exposes session status updates and bridge daemon heartbeats", () => {
+  const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
+  const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
+
+  assert.match(extension, /update_session_status/);
+  assert.match(extension, /updateSessionStatus/);
+  assert.match(extension, /lastHeartbeatAt/);
+  assert.match(ccBridge, /updateSessionStatus/);
+  assert.match(ccBridge, /setInterval\(touchHeartbeat/);
+});

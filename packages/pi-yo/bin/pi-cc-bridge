@@ -223,6 +223,25 @@ function runDaemon() {
 
   try { fs.unlinkSync(SOCKET_FILE); } catch {}
 
+  let heartbeatTimer;
+  function touchHeartbeat() {
+    try {
+      const registry = core.readRegistry(REGISTRY_FILE);
+      const entry = registry.sessions.find((session) => session.pid === process.pid);
+      if (entry) {
+        entry.lastHeartbeatAt = Date.now();
+        entry.readerKey = READER_KEY;
+        core.writeRegistry(registry, REGISTRY_FILE);
+      }
+      core.updateSessionStatus({
+        pid: process.pid,
+        name,
+        cwd,
+        readerKey: READER_KEY,
+      });
+    } catch {}
+  }
+
   const server = net.createServer((socket) => {
     let buffer = "";
     socket.on("data", (chunk) => {
@@ -274,9 +293,19 @@ function runDaemon() {
         supacodeSurfaceId: process.env.SUPACODE_SURFACE_ID,
       }),
     }, REGISTRY_FILE);
+    core.updateSessionStatus({
+      pid: process.pid,
+      name,
+      cwd,
+      readerKey: READER_KEY,
+      status: "idle",
+    });
+    heartbeatTimer = setInterval(touchHeartbeat, 30_000);
+    heartbeatTimer.unref?.();
   });
 
   function cleanup() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     core.unregisterSession(process.pid, REGISTRY_FILE);
     server.close();
     try { fs.unlinkSync(SOCKET_FILE); } catch {}
@@ -288,6 +317,7 @@ function runDaemon() {
   process.on("SIGTERM", cleanup);
   process.on("SIGINT", cleanup);
   process.on("exit", () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     core.unregisterSession(process.pid, REGISTRY_FILE);
     try { fs.unlinkSync(SOCKET_FILE); } catch {}
     try { fs.unlinkSync(PID_FILE); } catch {}

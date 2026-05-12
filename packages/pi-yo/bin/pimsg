@@ -56,6 +56,8 @@ function printHelp() {
     "Usage:",
     "  pimsg list                         List all visible Pi sessions",
     "  pimsg list --all                   Include invisible sessions for diagnostics",
+    "  pimsg list --with-status           List sessions with self-reported status",
+    "  pimsg state <target|--all>         Show bridge state for one or all sessions",
     "  pimsg <target> <message...>        Send a message to a session",
     "  pimsg --reply <target> <message..> Send a reply (no further reply expected)",
     "  pimsg doctor [--fix]              Inspect or repair pi-bridge IPC permissions",
@@ -73,6 +75,13 @@ function printHelp() {
 
 function visibilityLabel(session) {
   return core.normalizeBridgeVisibility(session && session.bridgeVisibility) === "invisible" ? "  [invisible]" : "";
+}
+
+function statusLabel(session) {
+  const state = core.readBridgeState();
+  const self = core.findSessionState(session, state);
+  const status = core.normalizeSessionStatus(self && self.status);
+  return status === "unknown" ? "" : `  [${status}]`;
 }
 
 function listSessions(options = {}) {
@@ -106,7 +115,8 @@ function listSessions(options = {}) {
       : `pid:${String(rawSession.pid).padEnd(7)}`;
     const sc = session.supacodeTabId ? `  [💻 ${session.supacodeTabId.slice(0, 8)}]` : "";
     const visibility = visibilityLabel(rawSession);
-    console.log(`  ${bullet} ${nameStr} ${pidStr} ${session.cwd}  (${age}m ago)${sc}${visibility}${label}`);
+    const state = options.withStatus ? statusLabel(rawSession) : "";
+    console.log(`  ${bullet} ${nameStr} ${pidStr} ${session.cwd}  (${age}m ago)${sc}${visibility}${state}${label}`);
   }
 
   const duplicates = core.duplicateCwdWarnings(sessions, { includeInvisible: options.includeInvisible });
@@ -125,7 +135,7 @@ async function main() {
   }
 
   if (args[0] === "list") {
-    listSessions({ includeInvisible: args.includes("--all") });
+    listSessions({ includeInvisible: args.includes("--all"), withStatus: args.includes("--with-status") });
     return;
   }
 
@@ -148,6 +158,14 @@ async function main() {
       }
       if (!fix) console.log("Run: pimsg doctor --fix");
     }
+    return;
+  }
+
+  if (args[0] === "state") {
+    const target = args[1] || "--all";
+    const report = core.buildSessionStateReport(target, { includeGit: true });
+    if (report.status !== "found") die(report.text);
+    console.log(report.text);
     return;
   }
 

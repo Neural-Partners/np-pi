@@ -82,3 +82,24 @@ test("pi-cc-bridge inbox hook format emits valid Claude hook JSON", () => {
   assert.equal(empty.status, 0, empty.stderr);
   assert.equal(empty.stdout.trim(), "");
 });
+
+test("pi-cc-bridge state reports target state", () => {
+  const home = tempHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cc-cwd-"));
+  const paths = core.buildPaths(home);
+  core.writeRegistry({ sessions: [
+    { pid: process.pid, name: "agent", cwd, socketPath: path.join(paths.ipcDir, `${process.pid}.sock`), startedAt: Date.now(), readerKey: `pi:${process.pid}` },
+  ] }, paths.registryFile);
+  core.updateSessionStatus({
+    pid: process.pid,
+    name: "agent",
+    cwd,
+    status: "blocked",
+    blockedOn: "waiting on deploy",
+  }, { stateFile: paths.stateFile });
+
+  const result = runBridge(home, cwd, ["state", "agent"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /status: blocked/);
+  assert.match(result.stdout, /blockedOn: waiting on deploy/);
+});

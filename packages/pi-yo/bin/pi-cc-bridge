@@ -157,6 +157,13 @@ function cmdInbox(args = []) {
   }
 }
 
+function cmdState(args = []) {
+  const target = args[0] || "--all";
+  const report = core.buildSessionStateReport(target, { includeGit: true });
+  if (report.status !== "found") die(report.text);
+  console.log(report.text);
+}
+
 function cmdStop() {
   const pid = readPid();
   if (!pid || !core.isProcessAlive(pid)) {
@@ -341,6 +348,7 @@ if (process.env.__PI_CC_BRIDGE_DAEMON === "1") {
     case "status": cmdStatus(); break;
     case "mailbox": cmdMailbox(); break;
     case "inbox": cmdInbox(process.argv.slice(3)); break;
+    case "state": cmdState(process.argv.slice(3)); break;
     case "stop": cmdStop(); break;
     default:
       die(`Unknown command: ${cmd}\nUsage: pi-cc-bridge [start|status|mailbox|inbox|state|stop]`);

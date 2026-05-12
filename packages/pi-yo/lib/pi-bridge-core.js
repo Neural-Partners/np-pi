@@ -912,6 +912,33 @@ function recordAcceptedBridgeMessage(options = {}) {
   return { duplicate: Boolean(existing), event };
 }
 
+function safeRecordAcceptedBridgeMessage(options = {}) {
+  try {
+    return { journalRecorded: true, recorded: recordAcceptedBridgeMessage(options) };
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    return {
+      journalRecorded: false,
+      recorded: null,
+      recordingError: sanitizeMetadata(message, 500),
+    };
+  }
+}
+
+function formatDuplicateMessageNotice(message = {}, recorded) {
+  const messageId = sanitizeMetadata(message.id || message.messageId || (recorded && recorded.event && recorded.event.messageId), 256);
+  const sender = `${sanitizeMetadata(message.fromName, 200)} (${path.basename(sanitizeMetadata(message.fromCwd, 1000))})`;
+  const duplicateOf = recorded && recorded.event && recorded.event.duplicateOf
+    ? ` duplicateOf:${sanitizeMetadata(recorded.event.duplicateOf, 256)}`
+    : "";
+  return [
+    "---",
+    `[duplicate] ${messageId || "unknown-message"} already accepted; raw content not replayed.${duplicateOf}`,
+    `From: ${sender}  |  ${formatBridgeTimestamp(Date.now())}`,
+    "",
+  ].join("\n");
+}
+
 function readBridgeCursors(cursorsFile = DEFAULT_PATHS.cursorsFile) {
   try {
     const parsed = JSON.parse(fs.readFileSync(cursorsFile, "utf-8"));
@@ -1140,8 +1167,8 @@ function doctorIpcPermissions(options = {}) {
   if (fix) chmodSafe(ipcDir, 0o700);
 
   for (const entry of fs.readdirSync(ipcDir, { withFileTypes: true })) {
-    if (!entry.isFile() && !entry.isSocket()) continue;
     if (!bridgeOwnedIpcFile(entry.name)) continue;
+    if (!entry.isFile() && !entry.isSocket() && !entry.isSymbolicLink()) continue;
     check(path.join(ipcDir, entry.name), 0o600);
   }
 
@@ -1431,6 +1458,7 @@ module.exports = {
   formatCandidateList,
   formatInboxEvents,
   formatInboxHookPayload,
+  formatDuplicateMessageNotice,
   formatMailboxNotice,
   formatNoticeWithControls,
   formatShimDiagnostics,
@@ -1466,6 +1494,7 @@ module.exports = {
   resolveSessionTarget,
   sanitizeMetadata,
   sanitizeSessionForDisplay,
+  safeRecordAcceptedBridgeMessage,
   sessionReaderKey,
   secureWriteFile,
   sendToSocket,

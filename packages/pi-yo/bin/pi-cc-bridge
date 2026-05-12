@@ -86,8 +86,8 @@ function writeSocketResponse(socket, response) {
   }
 }
 
-function recordAcceptedMessage(msg) {
-  return core.recordAcceptedBridgeMessage({
+function recordAcceptedMessageSafe(msg) {
+  return core.safeRecordAcceptedBridgeMessage({
     message: msg,
     to: {
       pid: process.pid,
@@ -96,6 +96,19 @@ function recordAcceptedMessage(msg) {
       readerKey: READER_KEY,
     },
   });
+}
+
+function journalReceiptMetadata(recording) {
+  const recorded = recording.recorded;
+  return {
+    ...(recorded ? { eventId: recorded.event.eventId, duplicate: recorded.duplicate } : { duplicate: false }),
+    journalRecorded: recording.journalRecorded !== false,
+    ...(recording.recordingError ? { warning: `retained journal failed: ${recording.recordingError}` } : {}),
+  };
+}
+
+function appendDuplicateToMailbox(msg, recorded) {
+  core.appendFileSecure(MAILBOX_FILE, core.formatDuplicateMessageNotice(msg, recorded));
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -260,12 +273,14 @@ function runDaemon() {
           if (!validation.ok) continue;
           const msg = validation.value;
           if (msg.type === "message") {
-            const recorded = recordAcceptedMessage(msg);
-            appendToMailbox(msg);
-            writeSocketResponse(socket, socketResponse("ack", msg, {
-              eventId: recorded.event.eventId,
-              duplicate: recorded.duplicate,
-            }));
+            const recording = recordAcceptedMessageSafe(msg);
+            const recorded = recording.recorded;
+            if (recorded?.duplicate) {
+              appendDuplicateToMailbox(msg, recorded);
+            } else {
+              appendToMailbox(msg);
+            }
+            writeSocketResponse(socket, socketResponse("ack", msg, journalReceiptMetadata(recording)));
           } else if (msg.type === "ping") {
             writeSocketResponse(socket, socketResponse("pong", msg));
           }

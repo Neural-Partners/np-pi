@@ -363,8 +363,8 @@ export default function (pi: ExtensionAPI) {
 		return bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: currentCtx?.cwd ?? process.cwd() });
 	}
 
-	function recordAcceptedMessage(msg: BridgeMessage, ctx: ExtensionContext): any {
-		return bridgeCore.recordAcceptedBridgeMessage({
+	function recordAcceptedMessageSafe(msg: BridgeMessage, ctx: ExtensionContext): any {
+		return bridgeCore.safeRecordAcceptedBridgeMessage({
 			message: msg,
 			to: {
 				pid: myPid,
@@ -373,6 +373,15 @@ export default function (pi: ExtensionAPI) {
 				readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
 			},
 		});
+	}
+
+	function journalReceiptMetadata(recording: any): any {
+		const recorded = recording?.recorded;
+		return {
+			...(recorded ? { eventId: recorded.event.eventId, duplicate: recorded.duplicate } : { duplicate: false }),
+			journalRecorded: recording?.journalRecorded !== false,
+			...(recording?.recordingError ? { warning: `retained journal failed: ${recording.recordingError}` } : {}),
+		};
 	}
 
 	function readPolicy(): any {
@@ -437,7 +446,13 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
-		const recorded = recordAcceptedMessage(msg, ctx);
+		const recording = recordAcceptedMessageSafe(msg, ctx);
+		const recorded = recording.recorded;
+		if (recorded?.duplicate) {
+			ctx.ui.notify(`↩️ Duplicate inter-session message ${safeText(msg.id, 200)} from ${sender} skipped.`, "info");
+			return recording;
+		}
+
 		const policy = readPolicy();
 		const rate = checkSenderRateLimit(policy, msg);
 		const delivery = bridgeCore.decideMessageDelivery(msg, policy, {
@@ -447,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 		if (delivery.action === "mailbox") {
 			appendToSessionMailbox(msg, delivery.reason);
 			ctx.ui.notify(`📥 Inter-session message from ${sender} held in bridge mailbox (${delivery.reason}). Run /bridge-mailbox to review.`, "warning");
-			return recorded;
+			return recording;
 		}
 
 		const isReply = msg.isReply === true;
@@ -474,7 +489,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			pi.sendUserMessage(content, { deliverAs: "followUp" });
 		}
-		return recorded;
+		return recording;
 	}
 
 	// ── Session Lifecycle ──────────────────────────────────────────────────
@@ -513,16 +528,13 @@ export default function (pi: ExtensionAPI) {
 						const msg = validation.value as BridgeMessage;
 						const ctx = currentCtx;
 						if (ctx && (msg.type === "message" || msg.type === "ping")) {
-							const recorded = handleIncoming(msg, ctx);
+							const recording = handleIncoming(msg, ctx);
 							const responseType = msg.type === "ping" ? "pong" : "ack";
 							const response = bridgeCore.createSocketResponse(responseType, msg, {
 								fromPid: myPid,
 								fromName: myName,
 								fromCwd: ctx.cwd,
-							}, recorded ? {
-								eventId: recorded.event.eventId,
-								duplicate: recorded.duplicate,
-							} : {});
+							}, recording ? journalReceiptMetadata(recording) : {});
 							socket.write(JSON.stringify(response) + "\n", "utf-8");
 						}
 					} catch {

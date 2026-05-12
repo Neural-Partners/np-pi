@@ -135,9 +135,9 @@ test("receivers record accepted messages and extension send paths ensure ids", (
   const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
   const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
 
-  assert.match(ccBridge, /recordAcceptedBridgeMessage/);
+  assert.match(ccBridge, /safeRecordAcceptedBridgeMessage/);
   assert.match(ccBridge, /sessionReaderKey/);
-  assert.match(extension, /recordAcceptedBridgeMessage/);
+  assert.match(extension, /safeRecordAcceptedBridgeMessage/);
   assert.match(extension, /ensureMessageId/);
   assert.match(extension, /readerKey: bridgeCore\.sessionReaderKey/);
 });
@@ -151,4 +151,17 @@ test("extension exposes session status updates and bridge daemon heartbeats", ()
   assert.match(extension, /lastHeartbeatAt/);
   assert.match(ccBridge, /updateSessionStatus/);
   assert.match(ccBridge, /setInterval\(touchHeartbeat/);
+});
+
+test("receivers suppress duplicate raw delivery and tolerate journal failures", () => {
+  const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
+  const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
+
+  assert.match(extension, /recordAcceptedMessageSafe/);
+  assert.match(extension, /recorded\?\.duplicate/);
+  assert.match(extension, /Duplicate inter-session message/);
+  assert.match(extension, /recordingError/);
+  assert.match(ccBridge, /recordAcceptedMessageSafe/);
+  assert.match(ccBridge, /appendDuplicateToMailbox/);
+  assert.match(ccBridge, /journalRecorded/);
 });

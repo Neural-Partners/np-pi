@@ -84,6 +84,13 @@ function statusLabel(session) {
   return status === "unknown" ? "" : `  [${status}]`;
 }
 
+function formatPermissionFinding(finding, fix) {
+  if (finding.issue === "symbolic-link") {
+    return `  ${finding.path} symbolic-link -> expected ${finding.expectedMode.toString(8)} regular bridge-owned file/socket${fix ? " not modified" : ""}`;
+  }
+  return `  ${finding.path} ${finding.actualMode.toString(8)} -> ${finding.expectedMode.toString(8)}${fix ? " fixed" : ""}`;
+}
+
 function listSessions(options = {}) {
   const allSessions = core.activeSessions();
   const sessions = options.includeInvisible ? allSessions : core.visibleSessions(allSessions);
@@ -155,7 +162,7 @@ async function main() {
     } else {
       console.log(`${fix ? "✓ Fixed" : "⚠️ Found"} ${result.findings.length} permission issue(s):`);
       for (const finding of result.findings) {
-        console.log(`  ${finding.path} ${finding.actualMode.toString(8)} -> ${finding.expectedMode.toString(8)}${fix ? " fixed" : ""}`);
+        console.log(formatPermissionFinding(finding, fix));
       }
       if (!fix) console.log("Run: pimsg doctor --fix");
     }

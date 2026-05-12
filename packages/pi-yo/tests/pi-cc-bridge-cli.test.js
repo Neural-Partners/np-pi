@@ -3,10 +3,12 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { setTimeout: delay } = require("node:timers/promises");
 
 const core = require("../lib/pi-bridge-core.js");
 const bridge = path.resolve(__dirname, "..", "bin", "pi-cc-bridge");
@@ -26,6 +28,26 @@ function runBridge(home, cwd, args) {
 function ccReaderKey(cwd) {
   const realCwd = fs.realpathSync(cwd);
   return core.sessionReaderKey({ name: `${path.basename(realCwd)} (CC)`, cwd: realCwd });
+}
+
+function ccMailboxFile(home, cwd) {
+  const hash = crypto.createHash("sha256").update(fs.realpathSync(cwd)).digest("hex").slice(0, 8);
+  return path.join(core.buildPaths(home).ipcDir, `cc-${hash}.mailbox`);
+}
+
+async function startBridge(t, home, cwd) {
+  const started = runBridge(home, cwd, ["start"]);
+  assert.equal(started.status, 0, started.stderr);
+  t.after(() => runBridge(home, cwd, ["stop"]));
+
+  const paths = core.buildPaths(home);
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const registry = core.readRegistry(paths.registryFile);
+    const session = registry.sessions.find((entry) => entry.cwd === fs.realpathSync(cwd) && entry.name.endsWith(" (CC)"));
+    if (session && fs.existsSync(session.socketPath)) return session;
+    await delay(50);
+  }
+  throw new Error("pi-cc-bridge daemon did not register in time");
 }
 
 test("pi-cc-bridge inbox reads retained events and consume advances only its cursor", () => {
@@ -102,4 +124,59 @@ test("pi-cc-bridge state reports target state", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /status: blocked/);
   assert.match(result.stdout, /blockedOn: waiting on deploy/);
+});
+
+test("pi-cc-bridge ACKs duplicate retries without replaying raw mailbox content", async (t) => {
+  const home = tempHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cc-cwd-"));
+  const session = await startBridge(t, home, cwd);
+  const message = {
+    id: "msg_duplicate_retry",
+    type: "message",
+    fromPid: 12345,
+    fromName: "agent",
+    fromCwd: "/repo/agent",
+    content: "duplicate raw body",
+    timestamp: Date.now(),
+    isReply: false,
+  };
+
+  const first = await core.sendToSocket(session.socketPath, message, { requireAck: true });
+  const second = await core.sendToSocket(session.socketPath, message, { requireAck: true });
+  assert.equal(first.response.duplicate, false);
+  assert.equal(second.response.duplicate, true);
+
+  const mailbox = runBridge(home, cwd, ["mailbox"]);
+  assert.equal(mailbox.status, 0, mailbox.stderr);
+  assert.equal((mailbox.stdout.match(/duplicate raw body/g) || []).length, 1);
+  assert.match(mailbox.stdout, /\[duplicate\] msg_duplicate_retry/);
+});
+
+test("pi-cc-bridge direct mailbox delivery survives retained journal failures", async (t) => {
+  const home = tempHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "cc-cwd-"));
+  const paths = core.buildPaths(home);
+  core.ensureIpcDir(paths.ipcDir);
+  const symlinkTarget = path.join(home, "events-target.jsonl");
+  fs.writeFileSync(symlinkTarget, "");
+  fs.symlinkSync(symlinkTarget, paths.eventsFile);
+  const session = await startBridge(t, home, cwd);
+
+  const receipt = await core.sendToSocket(session.socketPath, {
+    id: "msg_journal_failure",
+    type: "message",
+    fromPid: 12345,
+    fromName: "agent",
+    fromCwd: "/repo/agent",
+    content: "deliver despite journal failure",
+    timestamp: Date.now(),
+    isReply: false,
+  }, { requireAck: true, ackTimeoutMs: 250 });
+
+  assert.equal(receipt.acked, true);
+  assert.equal(receipt.response.journalRecorded, false);
+  assert.match(receipt.response.warning, /journal/i);
+
+  const mailbox = fs.readFileSync(ccMailboxFile(home, cwd), "utf-8");
+  assert.match(mailbox, /deliver despite journal failure/);
 });

@@ -874,6 +874,20 @@ test("diagnoseShimVersions reports stale local shim hashes", () => {
   assert.equal(result.ok, false);
 });
 
+test("doctorIpcPermissions reports bridge-owned ipc symlink entries", () => {
+  const home = tempHome();
+  const paths = core.buildPaths(home);
+  core.ensureIpcDir(paths.ipcDir);
+  const target = path.join(home, "events-target.jsonl");
+  fs.writeFileSync(target, "");
+  const link = path.join(paths.ipcDir, "bridge-events.jsonl");
+  fs.symlinkSync(target, link);
+
+  const result = core.doctorIpcPermissions({ ipcDir: paths.ipcDir, fix: true });
+
+  assert.equal(result.findings.some((finding) => finding.path === link && finding.issue === "symbolic-link"), true);
+});
+
 test("formatNoticeWithControls appends an explicit dismiss footer", () => {
   const notice = core.formatNoticeWithControls("Active Pi sessions:\n  • backend", {
     action: "Use /bridge-send <target> <message> to send a message.",

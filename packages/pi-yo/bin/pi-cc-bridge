@@ -11,6 +11,7 @@
  *   pi-cc-bridge start       Same as above
  *   pi-cc-bridge status      Show whether the bridge is running
  *   pi-cc-bridge mailbox     Print and clear the mailbox (new messages since last read)
+ *   pi-cc-bridge inbox       Print retained inbox events without clearing the journal
  *   pi-cc-bridge stop        Stop the bridge for the current directory
  */
 
@@ -129,6 +130,30 @@ function cmdMailbox() {
     }
   } catch {
     console.log("(no new messages)");
+  }
+}
+
+function cmdInbox(args = []) {
+  ensureIpcDir();
+  const consume = args.includes("--consume");
+  const all = args.includes("--all");
+  const formatIndex = args.indexOf("--format");
+  const format = formatIndex >= 0 ? args[formatIndex + 1] : "text";
+  const inbox = core.readInboxEvents({
+    readerKey: READER_KEY,
+    all,
+  });
+
+  if (format === "hook") {
+    const payload = core.formatInboxHookPayload(inbox.events);
+    if (payload) process.stdout.write(payload + "\n");
+  } else {
+    const formatted = core.formatInboxEvents(inbox.events).trim();
+    console.log(formatted || "(no new messages)");
+  }
+
+  if (consume && inbox.events.length > 0) {
+    core.consumeInboxEvents(inbox);
   }
 }
 
@@ -315,8 +340,9 @@ if (process.env.__PI_CC_BRIDGE_DAEMON === "1") {
     case "start": cmdStart(); break;
     case "status": cmdStatus(); break;
     case "mailbox": cmdMailbox(); break;
+    case "inbox": cmdInbox(process.argv.slice(3)); break;
     case "stop": cmdStop(); break;
     default:
-      die(`Unknown command: ${cmd}\nUsage: pi-cc-bridge [start|status|mailbox|stop]`);
+      die(`Unknown command: ${cmd}\nUsage: pi-cc-bridge [start|status|mailbox|inbox|state|stop]`);
   }
 }

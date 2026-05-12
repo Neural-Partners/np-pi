@@ -234,6 +234,82 @@ test("formatInboxHookPayload emits Claude hook JSON only when content exists", (
   assert.match(parsed.hookSpecificOutput.additionalContext, /hello orchestrator/);
 });
 
+test("session status normalizes to known states", () => {
+  assert.equal(core.normalizeSessionStatus("working"), "working");
+  assert.equal(core.normalizeSessionStatus("blocked"), "blocked");
+  assert.equal(core.normalizeSessionStatus("review"), "review");
+  assert.equal(core.normalizeSessionStatus("done"), "done");
+  assert.equal(core.normalizeSessionStatus("idle"), "idle");
+  assert.equal(core.normalizeSessionStatus("nonsense"), "unknown");
+});
+
+test("updateSessionStatus persists sanitized self-reported state", () => {
+  const paths = core.buildPaths(tempHome());
+  const result = core.updateSessionStatus({
+    pid: 123,
+    name: "agent",
+    cwd: "/repo/agent",
+    status: "working",
+    currentTask: "Implement retained inbox",
+    dispatchId: "dispatch-1",
+    blockedOn: "none",
+    summary: "green so far",
+  }, { stateFile: paths.stateFile });
+
+  assert.equal(result.status, "working");
+  assert.equal(result.currentTask, "Implement retained inbox");
+  assert.equal(fileMode(paths.stateFile), 0o600);
+
+  const state = core.readBridgeState(paths.stateFile);
+  assert.equal(state.sessions["pid:123"].dispatchId, "dispatch-1");
+});
+
+test("getGitState reports branch dirty counts and head commit", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "git-state-"));
+  const run = (cmd) => require("node:child_process").execFileSync(cmd[0], cmd.slice(1), { cwd: dir, encoding: "utf-8" });
+  run(["git", "init", "-b", "master"]);
+  run(["git", "config", "user.email", "test@example.com"]);
+  run(["git", "config", "user.name", "Test User"]);
+  fs.writeFileSync(path.join(dir, "file.txt"), "one\n");
+  run(["git", "add", "file.txt"]);
+  run(["git", "commit", "-m", "initial"]);
+  fs.writeFileSync(path.join(dir, "untracked.txt"), "new\n");
+
+  const state = core.getGitState(dir, { includePr: false });
+  assert.equal(state.isRepo, true);
+  assert.equal(state.branch, "master");
+  assert.equal(state.untracked, 1);
+  assert.match(state.head, /^[a-f0-9]{7,40}$/);
+  assert.equal(state.headSubject, "initial");
+});
+
+test("buildSessionStateReport combines registry state self-report and git summary", () => {
+  const paths = core.buildPaths(tempHome());
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "state-report-"));
+  core.writeRegistry({ sessions: [
+    { pid: process.pid, name: "agent", cwd, socketPath: path.join(paths.ipcDir, `${process.pid}.sock`), startedAt: Date.now() - 60000, readerKey: `pi:${process.pid}`, lastHeartbeatAt: Date.now() },
+  ] }, paths.registryFile);
+  core.updateSessionStatus({
+    pid: process.pid,
+    name: "agent",
+    cwd,
+    status: "working",
+    currentTask: "Testing report",
+    blockedOn: "none",
+  }, { stateFile: paths.stateFile });
+
+  const report = core.buildSessionStateReport("agent", {
+    registryFile: paths.registryFile,
+    stateFile: paths.stateFile,
+    includeGit: false,
+  });
+
+  assert.equal(report.status, "found");
+  assert.match(report.text, /agent pid:/);
+  assert.match(report.text, /status: working/);
+  assert.match(report.text, /currentTask: Testing report/);
+});
+
 test("setSessionVisibility updates one live registry entry and preserves other sessions", () => {
   const paths = core.buildPaths(tempHome());
   core.writeRegistry({ sessions: [

@@ -993,6 +993,130 @@ function formatInboxHookPayload(events) {
   }, null, 2);
 }
 
+const SESSION_STATUSES = Object.freeze(["idle", "working", "blocked", "review", "done", "unknown"]);
+
+function normalizeSessionStatus(value) {
+  return SESSION_STATUSES.includes(value) ? value : "unknown";
+}
+
+function stateSessionKey(input = {}) {
+  if (Number.isSafeInteger(input.pid) && input.pid > 0) return `pid:${input.pid}`;
+  return sessionReaderKey(input);
+}
+
+function readBridgeState(stateFile = DEFAULT_PATHS.stateFile) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
+    return {
+      schemaVersion: 1,
+      sessions: parsed && parsed.sessions && typeof parsed.sessions === "object" ? parsed.sessions : {},
+    };
+  } catch {
+    return { schemaVersion: 1, sessions: {} };
+  }
+}
+
+function writeBridgeState(state, stateFile = DEFAULT_PATHS.stateFile) {
+  secureWriteFile(stateFile, JSON.stringify({ schemaVersion: 1, sessions: state.sessions || {} }, null, 2));
+}
+
+function updateSessionStatus(input = {}, options = {}) {
+  const stateFile = options.stateFile || DEFAULT_PATHS.stateFile;
+  const state = readBridgeState(stateFile);
+  const key = stateSessionKey(input);
+  const current = state.sessions[key] || {};
+  const next = {
+    ...current,
+    pid: Number.isSafeInteger(input.pid) ? input.pid : current.pid,
+    name: sanitizeMetadata(input.name || current.name, 200),
+    cwd: sanitizeMetadata(input.cwd || current.cwd, 2048),
+    readerKey: input.readerKey ? normalizeReaderKey(input.readerKey) : current.readerKey,
+    status: normalizeSessionStatus(input.status || current.status),
+    currentTask: input.currentTask !== undefined ? sanitizeMetadata(input.currentTask, 1000) : current.currentTask,
+    dispatchId: input.dispatchId !== undefined ? sanitizeMetadata(input.dispatchId, 256) : current.dispatchId,
+    blockedOn: input.blockedOn !== undefined ? sanitizeMetadata(input.blockedOn, 1000) : current.blockedOn,
+    summary: input.summary !== undefined ? sanitizeMetadata(input.summary, 2000) : current.summary,
+    updatedAt: Date.now(),
+  };
+  state.sessions[key] = next;
+  writeBridgeState(state, stateFile);
+  return next;
+}
+
+function execGit(cwd, args) {
+  return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 }).trim();
+}
+
+function getGitState(cwd, options = {}) {
+  try {
+    execGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  } catch {
+    return { isRepo: false };
+  }
+  let status = "";
+  try { status = execGit(cwd, ["status", "--porcelain=v1", "--branch"]); } catch {}
+  const lines = status.split("\n").filter(Boolean);
+  const branchLine = lines.find((line) => line.startsWith("## ")) || "## unknown";
+  const branch = branchLine.replace(/^##\s+/, "").split("...")[0].trim();
+  const changes = lines.filter((line) => !line.startsWith("## "));
+  let head = "unknown";
+  let headSubject = "unknown";
+  try { head = execGit(cwd, ["rev-parse", "--short", "HEAD"]); } catch {}
+  try { headSubject = execGit(cwd, ["log", "-1", "--pretty=%s"]); } catch {}
+  return {
+    isRepo: true,
+    branch,
+    dirty: changes.filter((line) => !line.startsWith("??")).length,
+    untracked: changes.filter((line) => line.startsWith("??")).length,
+    head,
+    headSubject,
+  };
+}
+
+function findSessionState(session, state) {
+  const byPid = state.sessions[`pid:${session.pid}`];
+  if (byPid) return byPid;
+  const byReader = state.sessions[sessionReaderKey(session)];
+  return byReader || {};
+}
+
+function buildOneSessionStateText(session, options = {}) {
+  const state = readBridgeState(options.stateFile || DEFAULT_PATHS.stateFile);
+  const self = findSessionState(session, state);
+  const safe = sanitizeSessionForDisplay(session);
+  const alive = isProcessAlive(session.pid) ? "alive" : "dead";
+  const visibility = normalizeBridgeVisibility(session.bridgeVisibility);
+  const status = normalizeSessionStatus(self.status);
+  const heartbeat = session.lastHeartbeatAt ? `${Math.round((Date.now() - session.lastHeartbeatAt) / 1000)}s ago` : "unknown";
+  const lines = [
+    `${safe.name} pid:${session.pid} ${alive} ${visibility}`,
+    `cwd: ${safe.cwd}`,
+    `running: ${Math.round((Date.now() - session.startedAt) / 60000)}m  lastHeartbeat: ${heartbeat}`,
+    `status: ${status}${self.dispatchId ? `  dispatch: ${self.dispatchId}` : ""}`,
+    `currentTask: ${self.currentTask || "unknown"}`,
+    `blockedOn: ${self.blockedOn || "none"}`,
+  ];
+  if (options.includeGit !== false) {
+    const git = getGitState(session.cwd, { includePr: options.includePr });
+    if (git.isRepo) lines.push(`git: ${git.branch} dirty:${git.dirty} untracked:${git.untracked} head:${git.head} ${git.headSubject}`);
+    else lines.push("git: not a repository or unavailable");
+  }
+  if (self.summary) lines.push(`summary: ${self.summary}`);
+  return lines.join("\n");
+}
+
+function buildSessionStateReport(target, options = {}) {
+  const sessions = activeSessions({ registryFile: options.registryFile || DEFAULT_PATHS.registryFile });
+  if (target === "--all" || target === "all") {
+    return { status: "found", sessions, text: sessions.map((session) => buildOneSessionStateText(session, options)).join("\n\n") || "No active Pi sessions found." };
+  }
+  const resolution = resolveSessionTarget(target, sessions, { includeInvisible: true });
+  if (resolution.status !== "found") {
+    return { status: resolution.status, resolution, text: resolution.status === "ambiguous" ? `Ambiguous session target \"${sanitizeMetadata(target, 200)}\".\nCandidates:\n  ${formatCandidateList(resolution.candidates)}` : `Session \"${sanitizeMetadata(target, 200)}\" not found.\nAvailable:\n  ${formatCandidateList(sessions)}` };
+  }
+  return { status: "found", session: resolution.session, text: buildOneSessionStateText(resolution.session, options) };
+}
+
 function doctorIpcPermissions(options = {}) {
   const ipcDir = options.ipcDir || DEFAULT_PATHS.ipcDir;
   const fix = options.fix === true;
@@ -1221,7 +1345,9 @@ module.exports = {
   activeSessions,
   appendBridgeEvent,
   appendFileSecure,
+  buildOneSessionStateText,
   buildPaths,
+  buildSessionStateReport,
   buildSupacodeUrl,
   chmodSafe,
   collectJsonLines,
@@ -1236,12 +1362,14 @@ module.exports = {
   ensureIpcDir,
   ensureMessageId,
   findExistingMessageEvent,
+  findSessionState,
   formatCandidateList,
   formatInboxEvents,
   formatInboxHookPayload,
   formatMailboxNotice,
   formatNoticeWithControls,
   getFrontmostAppName,
+  getGitState,
   getProcessCommand,
   isAllowedBridgeSocketPath,
   isExpectedDaemonProcess,
@@ -1254,6 +1382,7 @@ module.exports = {
   normalizeBridgePolicy,
   normalizeBridgeVisibility,
   normalizeReaderKey,
+  normalizeSessionStatus,
   normalizeFocusPolicy,
   openSecureFile,
   openSupacodeTab,
@@ -1262,6 +1391,7 @@ module.exports = {
   readBridgeCursors,
   readBridgeEvents,
   readBridgePolicy,
+  readBridgeState,
   readPidMetadata,
   readInboxEvents,
   readRegistry,
@@ -1274,13 +1404,16 @@ module.exports = {
   secureWriteFile,
   sendToSocket,
   setSessionVisibility,
+  stateSessionKey,
   shouldFocusSession,
   truncateContent,
   unregisterSession,
+  updateSessionStatus,
   validateBridgeMessage,
   visibleSessions,
   withRegistryLock,
   writeBridgeCursors,
+  writeBridgeState,
   writePidMetadata,
   writeRegistry,
 };

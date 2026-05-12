@@ -86,3 +86,14 @@ test("package syntax script typechecks the Pi extension", () => {
   assert.match(packageJson.scripts.syntax, /extensions\/pi-bridge\.ts/);
   assert.match(packageJson.scripts.syntax, /--moduleResolution NodeNext/);
 });
+
+test("receivers record accepted messages and extension send paths ensure ids", () => {
+  const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
+  const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
+
+  assert.match(ccBridge, /recordAcceptedBridgeMessage/);
+  assert.match(ccBridge, /sessionReaderKey/);
+  assert.match(extension, /recordAcceptedBridgeMessage/);
+  assert.match(extension, /ensureMessageId/);
+  assert.match(extension, /readerKey: bridgeCore\.sessionReaderKey/);
+});

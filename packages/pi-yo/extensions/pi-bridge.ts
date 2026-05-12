@@ -55,6 +55,8 @@ interface RegistryEntry {
 	socketPath: string;
 	startedAt: number;
 	bridgeVisibility?: "visible" | "invisible";
+	readerKey?: string;
+	lastHeartbeatAt?: number;
 	// Supacode context (present when running inside Supacode)
 	supacodeTabId?: string;
 	supacodeWorktreeId?: string; // percent-encoded
@@ -323,7 +325,7 @@ function focusNotice(focus: any): string {
 // ─── Socket Transport ────────────────────────────────────────────────────────
 
 async function sendToSocket(socketPath: string, message: BridgeMessage): Promise<any> {
-	return bridgeCore.sendToSocket(socketPath, message);
+	return bridgeCore.sendToSocket(socketPath, bridgeCore.ensureMessageId(message));
 }
 
 function receiptSuffix(receipt: any): string {
@@ -354,6 +356,22 @@ export default function (pi: ExtensionAPI) {
 
 	function setMyVisibility(visibility: "visible" | "invisible"): any {
 		return bridgeCore.setSessionVisibility(myPid, visibility, REGISTRY_FILE);
+	}
+
+	function myReaderKey(): string {
+		return bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: currentCtx?.cwd ?? process.cwd() });
+	}
+
+	function recordAcceptedMessage(msg: BridgeMessage, ctx: ExtensionContext): any {
+		return bridgeCore.recordAcceptedBridgeMessage({
+			message: msg,
+			to: {
+				pid: myPid,
+				name: myName,
+				cwd: ctx.cwd,
+				readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+			},
+		});
 	}
 
 	function readPolicy(): any {
@@ -389,14 +407,15 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Handle an incoming message from another session
-	function handleIncoming(msg: BridgeMessage, ctx: ExtensionContext): void {
+	function handleIncoming(msg: BridgeMessage, ctx: ExtensionContext): any {
 		const sender = `${safeText(msg.fromName, 200)} (${path.basename(safeText(msg.fromCwd, 1000))})`;
 
 		if (msg.type === "ping") {
 			ctx.ui.notify(`📡 Ping from ${sender}`, "info");
-			return;
+			return undefined;
 		}
 
+		const recorded = recordAcceptedMessage(msg, ctx);
 		const policy = readPolicy();
 		const rate = checkSenderRateLimit(policy, msg);
 		const delivery = bridgeCore.decideMessageDelivery(msg, policy, {
@@ -406,7 +425,7 @@ export default function (pi: ExtensionAPI) {
 		if (delivery.action === "mailbox") {
 			appendToSessionMailbox(msg, delivery.reason);
 			ctx.ui.notify(`📥 Inter-session message from ${sender} held in bridge mailbox (${delivery.reason}). Run /bridge-mailbox to review.`, "warning");
-			return;
+			return recorded;
 		}
 
 		const isReply = msg.isReply === true;
@@ -433,6 +452,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			pi.sendUserMessage(content, { deliverAs: "followUp" });
 		}
+		return recorded;
 	}
 
 	// ── Session Lifecycle ──────────────────────────────────────────────────
@@ -471,13 +491,16 @@ export default function (pi: ExtensionAPI) {
 						const msg = validation.value as BridgeMessage;
 						const ctx = currentCtx;
 						if (ctx && (msg.type === "message" || msg.type === "ping")) {
-							handleIncoming(msg, ctx);
+							const recorded = handleIncoming(msg, ctx);
 							const responseType = msg.type === "ping" ? "pong" : "ack";
 							const response = bridgeCore.createSocketResponse(responseType, msg, {
 								fromPid: myPid,
 								fromName: myName,
 								fromCwd: ctx.cwd,
-							});
+							}, recorded ? {
+								eventId: recorded.event.eventId,
+								duplicate: recorded.duplicate,
+							} : {});
 							socket.write(JSON.stringify(response) + "\n", "utf-8");
 						}
 					} catch {
@@ -508,6 +531,8 @@ export default function (pi: ExtensionAPI) {
 			socketPath: mySocketPath,
 			startedAt: Date.now(),
 			bridgeVisibility: "visible",
+			readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+			lastHeartbeatAt: Date.now(),
 			...(process.env.SUPACODE_TAB_ID && {
 				supacodeTabId: process.env.SUPACODE_TAB_ID,
 				supacodeWorktreeId: process.env.SUPACODE_WORKTREE_ID,

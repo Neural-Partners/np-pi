@@ -36,6 +36,7 @@ const PID_FILE = path.join(IPC_DIR, `cc-${cwdHash}.pid`);
 const SOCKET_FILE = path.join(IPC_DIR, `cc-${cwdHash}.sock`);
 const MAILBOX_FILE = path.join(IPC_DIR, `cc-${cwdHash}.mailbox`);
 const META_FILE = path.join(IPC_DIR, `cc-${cwdHash}.json`);
+const READER_KEY = core.sessionReaderKey({ name, cwd });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,12 +69,12 @@ function die(msg, code = 1) {
   process.exit(code);
 }
 
-function socketResponse(type, msg) {
+function socketResponse(type, msg, extra = {}) {
   return core.createSocketResponse(type, msg, {
     fromPid: process.pid,
     fromName: name,
     fromCwd: cwd,
-  });
+  }, extra);
 }
 
 function writeSocketResponse(socket, response) {
@@ -82,6 +83,18 @@ function writeSocketResponse(socket, response) {
   } catch {
     // Best effort. The sender still has socket write success/failure.
   }
+}
+
+function recordAcceptedMessage(msg) {
+  return core.recordAcceptedBridgeMessage({
+    message: msg,
+    to: {
+      pid: process.pid,
+      name,
+      cwd,
+      readerKey: READER_KEY,
+    },
+  });
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -196,8 +209,12 @@ function runDaemon() {
           if (!validation.ok) continue;
           const msg = validation.value;
           if (msg.type === "message") {
+            const recorded = recordAcceptedMessage(msg);
             appendToMailbox(msg);
-            writeSocketResponse(socket, socketResponse("ack", msg));
+            writeSocketResponse(socket, socketResponse("ack", msg, {
+              eventId: recorded.event.eventId,
+              duplicate: recorded.duplicate,
+            }));
           } else if (msg.type === "ping") {
             writeSocketResponse(socket, socketResponse("pong", msg));
           }
@@ -217,6 +234,8 @@ function runDaemon() {
       cwd,
       socketPath: SOCKET_FILE,
       startedAt: Date.now(),
+      readerKey: READER_KEY,
+      lastHeartbeatAt: Date.now(),
       ...(process.env.SUPACODE_TAB_ID && {
         supacodeTabId: process.env.SUPACODE_TAB_ID,
         supacodeWorktreeId: process.env.SUPACODE_WORKTREE_ID,

@@ -2768,3 +2768,20 @@ If no files changed, do not create an empty commit.
 - `pimsg doctor` reports shim diagnostics, and `--sync-shims` is explicit.
 - README and bundled skill document the retained inbox and state workflow.
 - Package version is `0.3.0`.
+
+---
+
+## Review — 2026-05-12 Slice 1 Execution
+
+- Implemented Slice 1 on branch `design/pi-yo-orchestrator-reliability` through `7aa2e2a fix(pi-yo): make inbox cursors append-order safe`.
+- Package version bumped to `@neuralpartners/pi-yo@0.3.0`.
+- Added retained bridge journal/cursors, per-reader retained `pi-cc-bridge inbox`, hook JSON output, stable IDs/ACK metadata, dedup events, session state commands, `update_session_status`, heartbeat updates, and explicit shim diagnostics/sync.
+- Self-review found and fixed a cursor-ordering bug: cursors now advance by append order when timestamps tie, and accepted message events use local acceptance time instead of sender-provided timestamps.
+- Verification evidence:
+  - `npm run verify --workspace @neuralpartners/pi-yo` — 60/60 tests passed; JS syntax and TypeScript extension no-emit check passed.
+  - `npm run format:check` — all matched files use Prettier style.
+  - Structural greps found expected retained inbox/state/shim references and no stale direct focus calls.
+  - `git diff --check` — clean.
+  - `node packages/pi-yo/bin/pimsg doctor` — reports IPC OK plus stale local shim diagnostics and explicit `pimsg doctor --sync-shims` instruction.
+  - Temp-HOME retained inbox smoke showed message output and `after consume 0` without deleting journal history.
+- Code review was requested via pi-yo from `Projects (CC)` and `neural-core-app`; no reviewer reply was received before this verification note.

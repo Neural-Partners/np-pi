@@ -55,6 +55,8 @@ interface RegistryEntry {
 	socketPath: string;
 	startedAt: number;
 	bridgeVisibility?: "visible" | "invisible";
+	readerKey?: string;
+	lastHeartbeatAt?: number;
 	// Supacode context (present when running inside Supacode)
 	supacodeTabId?: string;
 	supacodeWorktreeId?: string; // percent-encoded
@@ -323,7 +325,7 @@ function focusNotice(focus: any): string {
 // ─── Socket Transport ────────────────────────────────────────────────────────
 
 async function sendToSocket(socketPath: string, message: BridgeMessage): Promise<any> {
-	return bridgeCore.sendToSocket(socketPath, message);
+	return bridgeCore.sendToSocket(socketPath, bridgeCore.ensureMessageId(message));
 }
 
 function receiptSuffix(receipt: any): string {
@@ -339,6 +341,7 @@ export default function (pi: ExtensionAPI) {
 	const myMailboxFile = path.join(IPC_DIR, `${myPid}.mailbox`);
 	let server: net.Server | undefined;
 	let currentCtx: ExtensionContext | undefined;
+	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let myName = "";
 	let rateLimitSize = bridgeCore.DEFAULT_BRIDGE_POLICY.rateLimit.perSenderPer10s;
 	let senderRateLimiter = bridgeCore.createSenderRateLimiter({ limit: rateLimitSize, windowMs: 10_000 });
@@ -356,8 +359,54 @@ export default function (pi: ExtensionAPI) {
 		return bridgeCore.setSessionVisibility(myPid, visibility, REGISTRY_FILE);
 	}
 
+	function myReaderKey(): string {
+		return bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: currentCtx?.cwd ?? process.cwd() });
+	}
+
+	function recordAcceptedMessageSafe(msg: BridgeMessage, ctx: ExtensionContext): any {
+		return bridgeCore.safeRecordAcceptedBridgeMessage({
+			message: msg,
+			to: {
+				pid: myPid,
+				name: myName,
+				cwd: ctx.cwd,
+				readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+			},
+		});
+	}
+
+	function journalReceiptMetadata(recording: any): any {
+		const recorded = recording?.recorded;
+		return {
+			...(recorded ? { eventId: recorded.event.eventId, duplicate: recorded.duplicate } : { duplicate: false }),
+			journalRecorded: recording?.journalRecorded !== false,
+			...(recording?.recordingError ? { warning: `retained journal failed: ${recording.recordingError}` } : {}),
+		};
+	}
+
 	function readPolicy(): any {
 		return bridgeCore.readBridgePolicy(BRIDGE_POLICY_FILE);
+	}
+
+	function touchHeartbeat(): void {
+		try {
+			const registry = readRegistry();
+			const entry = registry.sessions.find((session) => session.pid === myPid);
+			if (entry) {
+				entry.name = myName || entry.name;
+				entry.readerKey = myReaderKey();
+				entry.lastHeartbeatAt = Date.now();
+				writeRegistry(registry);
+			}
+			if (currentCtx) {
+				bridgeCore.updateSessionStatus({
+					pid: myPid,
+					name: myName || getMyName(currentCtx),
+					cwd: currentCtx.cwd,
+					readerKey: myReaderKey(),
+				});
+			}
+		} catch {}
 	}
 
 	function checkSenderRateLimit(policy: any, msg: BridgeMessage): any {
@@ -389,12 +438,19 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Handle an incoming message from another session
-	function handleIncoming(msg: BridgeMessage, ctx: ExtensionContext): void {
+	function handleIncoming(msg: BridgeMessage, ctx: ExtensionContext): any {
 		const sender = `${safeText(msg.fromName, 200)} (${path.basename(safeText(msg.fromCwd, 1000))})`;
 
 		if (msg.type === "ping") {
 			ctx.ui.notify(`📡 Ping from ${sender}`, "info");
-			return;
+			return undefined;
+		}
+
+		const recording = recordAcceptedMessageSafe(msg, ctx);
+		const recorded = recording.recorded;
+		if (recorded?.duplicate) {
+			ctx.ui.notify(`↩️ Duplicate inter-session message ${safeText(msg.id, 200)} from ${sender} skipped.`, "info");
+			return recording;
 		}
 
 		const policy = readPolicy();
@@ -406,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 		if (delivery.action === "mailbox") {
 			appendToSessionMailbox(msg, delivery.reason);
 			ctx.ui.notify(`📥 Inter-session message from ${sender} held in bridge mailbox (${delivery.reason}). Run /bridge-mailbox to review.`, "warning");
-			return;
+			return recording;
 		}
 
 		const isReply = msg.isReply === true;
@@ -433,6 +489,7 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			pi.sendUserMessage(content, { deliverAs: "followUp" });
 		}
+		return recording;
 	}
 
 	// ── Session Lifecycle ──────────────────────────────────────────────────
@@ -471,13 +528,13 @@ export default function (pi: ExtensionAPI) {
 						const msg = validation.value as BridgeMessage;
 						const ctx = currentCtx;
 						if (ctx && (msg.type === "message" || msg.type === "ping")) {
-							handleIncoming(msg, ctx);
+							const recording = handleIncoming(msg, ctx);
 							const responseType = msg.type === "ping" ? "pong" : "ack";
 							const response = bridgeCore.createSocketResponse(responseType, msg, {
 								fromPid: myPid,
 								fromName: myName,
 								fromCwd: ctx.cwd,
-							});
+							}, recording ? journalReceiptMetadata(recording) : {});
 							socket.write(JSON.stringify(response) + "\n", "utf-8");
 						}
 					} catch {
@@ -508,12 +565,23 @@ export default function (pi: ExtensionAPI) {
 			socketPath: mySocketPath,
 			startedAt: Date.now(),
 			bridgeVisibility: "visible",
+			readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+			lastHeartbeatAt: Date.now(),
 			...(process.env.SUPACODE_TAB_ID && {
 				supacodeTabId: process.env.SUPACODE_TAB_ID,
 				supacodeWorktreeId: process.env.SUPACODE_WORKTREE_ID,
 				supacodeSurfaceId: process.env.SUPACODE_SURFACE_ID,
 			}),
 		});
+		bridgeCore.updateSessionStatus({
+			pid: myPid,
+			name: myName,
+			cwd: ctx.cwd,
+			readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+			status: "idle",
+		});
+		heartbeatTimer = setInterval(touchHeartbeat, 30_000);
+		heartbeatTimer.unref?.();
 
 		if (ctx.hasUI) {
 			const sessions = getActiveSessions(myPid);
@@ -524,6 +592,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		unregisterSession(myPid);
 		server?.close();
 		try {
@@ -541,9 +610,12 @@ export default function (pi: ExtensionAPI) {
 			const entry = registry.sessions.find((s) => s.pid === myPid);
 			if (entry) {
 				entry.name = myName;
+				entry.readerKey = myReaderKey();
+				entry.lastHeartbeatAt = Date.now();
 				writeRegistry(registry);
 			}
 		}
+		touchHeartbeat();
 	});
 
 	// ── Commands (human-facing) ────────────────────────────────────────────
@@ -810,6 +882,57 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── LLM Tools ─────────────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "update_session_status",
+		label: "Update Pi Session Status",
+		description:
+			"Update this Pi agent session's self-reported bridge state for orchestrator visibility. " +
+			"Use this before/after dispatch work, when blocked, entering review, or completing a task.",
+		promptSnippet: "Update this session's bridge status for orchestrator state reports",
+		promptGuidelines: [
+			"Only update the current Pi session's status; do not modify other agents.",
+			"Use status values: idle, working, blocked, review, done, or unknown.",
+			"Include concise currentTask, blockedOn, dispatchId, and summary fields when useful for orchestrator visibility.",
+		],
+		parameters: Type.Object({
+			status: Type.String({
+				description: "Session status: idle, working, blocked, review, done, or unknown.",
+			}),
+			currentTask: Type.Optional(Type.String({ description: "Short description of current work." })),
+			dispatchId: Type.Optional(Type.String({ description: "Dispatch/ledger identifier if this work came from an orchestrator." })),
+			blockedOn: Type.Optional(Type.String({ description: "Blocker description. Use empty string when unblocked." })),
+			summary: Type.Optional(Type.String({ description: "Brief status summary for fleet/orchestrator reports." })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const normalized = bridgeCore.normalizeSessionStatus(String(params.status ?? "unknown"));
+			if (normalized === "unknown" && String(params.status ?? "unknown") !== "unknown") {
+				return {
+					content: [{ type: "text", text: "status must be idle, working, blocked, review, done, or unknown." }],
+					isError: true,
+					details: { status: params.status, pid: myPid },
+				};
+			}
+			currentCtx = ctx;
+			myName = getMyName(ctx);
+			const updated = bridgeCore.updateSessionStatus({
+				pid: myPid,
+				name: myName,
+				cwd: ctx.cwd,
+				readerKey: bridgeCore.sessionReaderKey({ pid: myPid, name: myName, cwd: ctx.cwd }),
+				status: normalized,
+				currentTask: params.currentTask,
+				dispatchId: params.dispatchId,
+				blockedOn: params.blockedOn,
+				summary: params.summary,
+			});
+			touchHeartbeat();
+			return {
+				content: [{ type: "text", text: `Session status updated: ${updated.status}${updated.currentTask ? ` — ${updated.currentTask}` : ""}` }],
+				details: updated,
+			};
+		},
+	});
 
 	pi.registerTool({
 		name: "set_session_visibility",

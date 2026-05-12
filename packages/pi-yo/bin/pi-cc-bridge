@@ -11,6 +11,7 @@
  *   pi-cc-bridge start       Same as above
  *   pi-cc-bridge status      Show whether the bridge is running
  *   pi-cc-bridge mailbox     Print and clear the mailbox (new messages since last read)
+ *   pi-cc-bridge inbox       Print retained inbox events without clearing the journal
  *   pi-cc-bridge stop        Stop the bridge for the current directory
  */
 
@@ -36,6 +37,7 @@ const PID_FILE = path.join(IPC_DIR, `cc-${cwdHash}.pid`);
 const SOCKET_FILE = path.join(IPC_DIR, `cc-${cwdHash}.sock`);
 const MAILBOX_FILE = path.join(IPC_DIR, `cc-${cwdHash}.mailbox`);
 const META_FILE = path.join(IPC_DIR, `cc-${cwdHash}.json`);
+const READER_KEY = core.sessionReaderKey({ name, cwd });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,12 +70,12 @@ function die(msg, code = 1) {
   process.exit(code);
 }
 
-function socketResponse(type, msg) {
+function socketResponse(type, msg, extra = {}) {
   return core.createSocketResponse(type, msg, {
     fromPid: process.pid,
     fromName: name,
     fromCwd: cwd,
-  });
+  }, extra);
 }
 
 function writeSocketResponse(socket, response) {
@@ -82,6 +84,31 @@ function writeSocketResponse(socket, response) {
   } catch {
     // Best effort. The sender still has socket write success/failure.
   }
+}
+
+function recordAcceptedMessageSafe(msg) {
+  return core.safeRecordAcceptedBridgeMessage({
+    message: msg,
+    to: {
+      pid: process.pid,
+      name,
+      cwd,
+      readerKey: READER_KEY,
+    },
+  });
+}
+
+function journalReceiptMetadata(recording) {
+  const recorded = recording.recorded;
+  return {
+    ...(recorded ? { eventId: recorded.event.eventId, duplicate: recorded.duplicate } : { duplicate: false }),
+    journalRecorded: recording.journalRecorded !== false,
+    ...(recording.recordingError ? { warning: `retained journal failed: ${recording.recordingError}` } : {}),
+  };
+}
+
+function appendDuplicateToMailbox(msg, recorded) {
+  core.appendFileSecure(MAILBOX_FILE, core.formatDuplicateMessageNotice(msg, recorded));
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -117,6 +144,37 @@ function cmdMailbox() {
   } catch {
     console.log("(no new messages)");
   }
+}
+
+function cmdInbox(args = []) {
+  ensureIpcDir();
+  const consume = args.includes("--consume");
+  const all = args.includes("--all");
+  const formatIndex = args.indexOf("--format");
+  const format = formatIndex >= 0 ? args[formatIndex + 1] : "text";
+  const inbox = core.readInboxEvents({
+    readerKey: READER_KEY,
+    all,
+  });
+
+  if (format === "hook") {
+    const payload = core.formatInboxHookPayload(inbox.events);
+    if (payload) process.stdout.write(payload + "\n");
+  } else {
+    const formatted = core.formatInboxEvents(inbox.events).trim();
+    console.log(formatted || "(no new messages)");
+  }
+
+  if (consume && inbox.events.length > 0) {
+    core.consumeInboxEvents(inbox);
+  }
+}
+
+function cmdState(args = []) {
+  const target = args[0] || "--all";
+  const report = core.buildSessionStateReport(target, { includeGit: true });
+  if (report.status !== "found") die(report.text);
+  console.log(report.text);
 }
 
 function cmdStop() {
@@ -178,6 +236,25 @@ function runDaemon() {
 
   try { fs.unlinkSync(SOCKET_FILE); } catch {}
 
+  let heartbeatTimer;
+  function touchHeartbeat() {
+    try {
+      const registry = core.readRegistry(REGISTRY_FILE);
+      const entry = registry.sessions.find((session) => session.pid === process.pid);
+      if (entry) {
+        entry.lastHeartbeatAt = Date.now();
+        entry.readerKey = READER_KEY;
+        core.writeRegistry(registry, REGISTRY_FILE);
+      }
+      core.updateSessionStatus({
+        pid: process.pid,
+        name,
+        cwd,
+        readerKey: READER_KEY,
+      });
+    } catch {}
+  }
+
   const server = net.createServer((socket) => {
     let buffer = "";
     socket.on("data", (chunk) => {
@@ -196,8 +273,14 @@ function runDaemon() {
           if (!validation.ok) continue;
           const msg = validation.value;
           if (msg.type === "message") {
-            appendToMailbox(msg);
-            writeSocketResponse(socket, socketResponse("ack", msg));
+            const recording = recordAcceptedMessageSafe(msg);
+            const recorded = recording.recorded;
+            if (recorded?.duplicate) {
+              appendDuplicateToMailbox(msg, recorded);
+            } else {
+              appendToMailbox(msg);
+            }
+            writeSocketResponse(socket, socketResponse("ack", msg, journalReceiptMetadata(recording)));
           } else if (msg.type === "ping") {
             writeSocketResponse(socket, socketResponse("pong", msg));
           }
@@ -217,15 +300,27 @@ function runDaemon() {
       cwd,
       socketPath: SOCKET_FILE,
       startedAt: Date.now(),
+      readerKey: READER_KEY,
+      lastHeartbeatAt: Date.now(),
       ...(process.env.SUPACODE_TAB_ID && {
         supacodeTabId: process.env.SUPACODE_TAB_ID,
         supacodeWorktreeId: process.env.SUPACODE_WORKTREE_ID,
         supacodeSurfaceId: process.env.SUPACODE_SURFACE_ID,
       }),
     }, REGISTRY_FILE);
+    core.updateSessionStatus({
+      pid: process.pid,
+      name,
+      cwd,
+      readerKey: READER_KEY,
+      status: "idle",
+    });
+    heartbeatTimer = setInterval(touchHeartbeat, 30_000);
+    heartbeatTimer.unref?.();
   });
 
   function cleanup() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     core.unregisterSession(process.pid, REGISTRY_FILE);
     server.close();
     try { fs.unlinkSync(SOCKET_FILE); } catch {}
@@ -237,6 +332,7 @@ function runDaemon() {
   process.on("SIGTERM", cleanup);
   process.on("SIGINT", cleanup);
   process.on("exit", () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     core.unregisterSession(process.pid, REGISTRY_FILE);
     try { fs.unlinkSync(SOCKET_FILE); } catch {}
     try { fs.unlinkSync(PID_FILE); } catch {}
@@ -296,8 +392,10 @@ if (process.env.__PI_CC_BRIDGE_DAEMON === "1") {
     case "start": cmdStart(); break;
     case "status": cmdStatus(); break;
     case "mailbox": cmdMailbox(); break;
+    case "inbox": cmdInbox(process.argv.slice(3)); break;
+    case "state": cmdState(process.argv.slice(3)); break;
     case "stop": cmdStop(); break;
     default:
-      die(`Unknown command: ${cmd}\nUsage: pi-cc-bridge [start|status|mailbox|stop]`);
+      die(`Unknown command: ${cmd}\nUsage: pi-cc-bridge [start|status|mailbox|inbox|state|stop]`);
   }
 }

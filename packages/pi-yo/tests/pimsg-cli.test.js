@@ -42,3 +42,50 @@ test("pimsg list hides invisible sessions by default and list --all shows them",
   assert.match(all.stdout, /standby/);
   assert.match(all.stdout, /\[invisible\]/);
 });
+
+test("pimsg state reports self-reported status and list --with-status includes compact status", () => {
+  const home = tempHome();
+  const paths = core.buildPaths(home);
+  core.writeRegistry({ sessions: [
+    { pid: process.pid, name: "agent", cwd: process.cwd(), socketPath: path.join(paths.ipcDir, `${process.pid}.sock`), startedAt: Date.now(), readerKey: `pi:${process.pid}` },
+  ] }, paths.registryFile);
+  core.updateSessionStatus({
+    pid: process.pid,
+    name: "agent",
+    cwd: process.cwd(),
+    status: "working",
+    currentTask: "Build state command",
+  }, { stateFile: paths.stateFile });
+
+  const state = runPimsg(home, ["state", "agent"]);
+  assert.equal(state.status, 0, state.stderr);
+  assert.match(state.stdout, /status: working/);
+  assert.match(state.stdout, /currentTask: Build state command/);
+
+  const list = runPimsg(home, ["list", "--with-status"]);
+  assert.equal(list.status, 0, list.stderr);
+  assert.match(list.stdout, /\[working\]/);
+});
+
+test("pimsg doctor reports shim diagnostics", () => {
+  const home = tempHome();
+  const result = runPimsg(home, ["doctor"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /pi-bridge IPC permissions/);
+  assert.match(result.stdout, /Shim diagnostics/);
+});
+
+test("pimsg doctor renders symlink permission findings without crashing", () => {
+  const home = tempHome();
+  const agentDir = path.join(home, ".pi", "agent");
+  fs.mkdirSync(agentDir, { recursive: true });
+  const target = path.join(home, "real-roster.json");
+  const link = path.join(agentDir, "bridge-roster.json");
+  fs.writeFileSync(target, "{}");
+  fs.symlinkSync(target, link);
+
+  const result = runPimsg(home, ["doctor"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /symbolic-link/);
+  assert.match(result.stdout, /bridge-roster\.json/);
+});

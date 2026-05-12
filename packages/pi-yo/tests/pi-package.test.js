@@ -62,6 +62,50 @@ test("README documents invisible session mode", () => {
   }
 });
 
+test("README documents retained inbox and state commands", () => {
+  const readme = fs.readFileSync(path.join(packageRoot, "README.md"), "utf-8");
+
+  for (const required of [
+    "Retained inbox",
+    "pi-cc-bridge inbox --format hook --consume",
+    "Session state",
+    "update_session_status",
+    "pimsg state",
+    "pi-cc-bridge state",
+  ]) {
+    assert.match(readme, new RegExp(escapeRegExp(required)));
+  }
+});
+
+test("README and skill document reliable inbox and state commands", () => {
+  const readme = fs.readFileSync(path.join(packageRoot, "README.md"), "utf-8");
+  const skill = fs.readFileSync(path.join(packageRoot, "skills", "pi-yo", "SKILL.md"), "utf-8");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf-8"));
+
+  for (const required of [
+    "pi-cc-bridge inbox --format hook --consume",
+    "pimsg state <target>",
+    "pimsg list --with-status",
+    "update_session_status",
+    "pimsg doctor --sync-shims",
+    "retained inbox",
+  ]) {
+    assert.match(readme, new RegExp(escapeRegExp(required)));
+  }
+
+  for (const required of [
+    "update_session_status",
+    "Set status=working",
+    "Set status=done",
+    "pimsg state",
+    "retained inbox",
+  ]) {
+    assert.match(skill, new RegExp(escapeRegExp(required)));
+  }
+
+  assert.equal(packageJson.version, "0.3.0");
+});
+
 test("extension exposes self visibility controls", () => {
   const extensionPath = path.join(packageRoot, "extensions", "pi-bridge.ts");
   const extension = fs.readFileSync(extensionPath, "utf-8");
@@ -75,4 +119,49 @@ test("extension exposes self visibility controls", () => {
   ]) {
     assert.match(extension, new RegExp(escapeRegExp(required)));
   }
+});
+
+test("package syntax script typechecks the Pi extension", () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(packageRoot, "package.json"), "utf-8"),
+  );
+
+  assert.match(packageJson.scripts.syntax, /tsc --noEmit/);
+  assert.match(packageJson.scripts.syntax, /extensions\/pi-bridge\.ts/);
+  assert.match(packageJson.scripts.syntax, /--moduleResolution NodeNext/);
+});
+
+test("receivers record accepted messages and extension send paths ensure ids", () => {
+  const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
+  const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
+
+  assert.match(ccBridge, /safeRecordAcceptedBridgeMessage/);
+  assert.match(ccBridge, /sessionReaderKey/);
+  assert.match(extension, /safeRecordAcceptedBridgeMessage/);
+  assert.match(extension, /ensureMessageId/);
+  assert.match(extension, /readerKey: bridgeCore\.sessionReaderKey/);
+});
+
+test("extension exposes session status updates and bridge daemon heartbeats", () => {
+  const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
+  const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
+
+  assert.match(extension, /update_session_status/);
+  assert.match(extension, /updateSessionStatus/);
+  assert.match(extension, /lastHeartbeatAt/);
+  assert.match(ccBridge, /updateSessionStatus/);
+  assert.match(ccBridge, /setInterval\(touchHeartbeat/);
+});
+
+test("receivers suppress duplicate raw delivery and tolerate journal failures", () => {
+  const extension = fs.readFileSync(path.join(packageRoot, "extensions", "pi-bridge.ts"), "utf-8");
+  const ccBridge = fs.readFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "utf-8");
+
+  assert.match(extension, /recordAcceptedMessageSafe/);
+  assert.match(extension, /recorded\?\.duplicate/);
+  assert.match(extension, /Duplicate inter-session message/);
+  assert.match(extension, /recordingError/);
+  assert.match(ccBridge, /recordAcceptedMessageSafe/);
+  assert.match(ccBridge, /appendDuplicateToMailbox/);
+  assert.match(ccBridge, /journalRecorded/);
 });

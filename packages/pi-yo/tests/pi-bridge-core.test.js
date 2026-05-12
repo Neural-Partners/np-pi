@@ -118,6 +118,252 @@ test("ensureIpcDir and writeRegistry use owner-only filesystem permissions", () 
   assert.equal(fileMode(paths.registryFile), 0o600);
 });
 
+test("bridge event journal appends owner-only JSONL events in order", () => {
+  const paths = core.buildPaths(tempHome());
+  const first = core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_a",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "pi:2" },
+    content: "first",
+    acceptedAt: 1000,
+  }, { eventsFile: paths.eventsFile });
+  const second = core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_b",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "pi:2" },
+    content: "second",
+    acceptedAt: 2000,
+  }, { eventsFile: paths.eventsFile });
+
+  assert.equal(fileMode(paths.eventsFile), 0o600);
+  const events = core.readBridgeEvents({ eventsFile: paths.eventsFile });
+  assert.deepEqual(events.map((event) => event.messageId), ["msg_a", "msg_b"]);
+  assert.match(first.eventId, /^evt_/);
+  assert.match(second.eventId, /^evt_/);
+});
+
+test("retained inbox consume advances only the selected reader cursor", () => {
+  const paths = core.buildPaths(tempHome());
+  core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_one",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:abcd1234" },
+    content: "one",
+    acceptedAt: 1000,
+  }, { eventsFile: paths.eventsFile });
+  core.appendBridgeEvent({
+    kind: "message.accepted",
+    messageId: "msg_two",
+    from: { pid: 1, name: "sender", cwd: "/sender" },
+    to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:abcd1234" },
+    content: "two",
+    acceptedAt: 2000,
+  }, { eventsFile: paths.eventsFile });
+
+  const firstRead = core.readInboxEvents({
+    readerKey: "cc:abcd1234",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  assert.deepEqual(firstRead.events.map((event) => event.messageId), ["msg_one", "msg_two"]);
+
+  core.consumeInboxEvents(firstRead, { cursorsFile: paths.cursorsFile });
+
+  const secondRead = core.readInboxEvents({
+    readerKey: "cc:abcd1234",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  const otherReader = core.readInboxEvents({
+    readerKey: "cc:other",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+
+  assert.deepEqual(secondRead.events, []);
+  assert.deepEqual(otherReader.events, []);
+  assert.equal(fileMode(paths.cursorsFile), 0o600);
+});
+
+test("retained inbox cursor follows append order when timestamps tie", () => {
+  const paths = core.buildPaths(tempHome());
+  core.appendBridgeEvent(
+    {
+      eventId: "evt_z",
+      kind: "message.accepted",
+      messageId: "msg_first",
+      from: { pid: 1, name: "sender", cwd: "/sender" },
+      to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:repo" },
+      content: "first",
+      acceptedAt: 1000,
+    },
+    { eventsFile: paths.eventsFile },
+  );
+  const firstRead = core.readInboxEvents({
+    readerKey: "cc:repo",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  assert.equal(core.consumeInboxEvents(firstRead), true);
+
+  core.appendBridgeEvent(
+    {
+      eventId: "evt_a",
+      kind: "message.accepted",
+      messageId: "msg_second",
+      from: { pid: 1, name: "sender", cwd: "/sender" },
+      to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:repo" },
+      content: "second",
+      acceptedAt: 1000,
+    },
+    { eventsFile: paths.eventsFile },
+  );
+
+  const secondRead = core.readInboxEvents({
+    readerKey: "cc:repo",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  assert.deepEqual(secondRead.events.map((event) => event.messageId), ["msg_second"]);
+});
+
+test("recordAcceptedBridgeMessage uses local acceptance time for cursor safety", () => {
+  const paths = core.buildPaths(tempHome());
+  const before = Date.now();
+  const recorded = core.recordAcceptedBridgeMessage({
+    message: sampleMessage({ id: "msg_old_sender", timestamp: 1 }),
+    to: { pid: 888, name: "receiver", cwd: "/receiver", readerKey: "pi:888" },
+    eventsFile: paths.eventsFile,
+  });
+
+  assert.ok(recorded.event.acceptedAt >= before);
+});
+
+test("message duplicate detection labels repeated message ids", () => {
+  const paths = core.buildPaths(tempHome());
+  const first = core.recordAcceptedBridgeMessage({
+    message: sampleMessage({ id: "msg_same", fromPid: 777, fromName: "sender" }),
+    to: { pid: 888, name: "receiver", cwd: "/receiver", readerKey: "pi:888" },
+    eventsFile: paths.eventsFile,
+  });
+  const duplicate = core.recordAcceptedBridgeMessage({
+    message: sampleMessage({ id: "msg_same", fromPid: 777, fromName: "sender" }),
+    to: { pid: 888, name: "receiver", cwd: "/receiver", readerKey: "pi:888" },
+    eventsFile: paths.eventsFile,
+  });
+
+  assert.equal(first.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.event.kind, "message.duplicate");
+  assert.equal(duplicate.event.duplicateOf, first.event.eventId);
+
+  const inbox = core.readInboxEvents({ readerKey: "pi:888", eventsFile: paths.eventsFile });
+  const formatted = core.formatInboxEvents(inbox.events);
+  assert.match(formatted, /hello/);
+  assert.match(formatted, /\[duplicate\] msg_same already seen/);
+});
+
+test("formatInboxHookPayload emits Claude hook JSON only when content exists", () => {
+  assert.equal(core.formatInboxHookPayload([]), "");
+
+  const payload = core.formatInboxHookPayload([
+    {
+      eventId: "evt_1",
+      kind: "message.accepted",
+      messageId: "msg_one",
+      acceptedAt: 1000,
+      from: { pid: 1, name: "sender", cwd: "/repo/sender" },
+      to: { pid: 2, name: "receiver", cwd: "/repo/receiver", readerKey: "cc:abcd" },
+      content: "hello orchestrator",
+      isReply: true,
+    },
+  ]);
+
+  const parsed = JSON.parse(payload);
+  assert.equal(parsed.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(parsed.hookSpecificOutput.additionalContext, /^\[pi-bridge inbox\]/);
+  assert.match(parsed.hookSpecificOutput.additionalContext, /hello orchestrator/);
+});
+
+test("session status normalizes to known states", () => {
+  assert.equal(core.normalizeSessionStatus("working"), "working");
+  assert.equal(core.normalizeSessionStatus("blocked"), "blocked");
+  assert.equal(core.normalizeSessionStatus("review"), "review");
+  assert.equal(core.normalizeSessionStatus("done"), "done");
+  assert.equal(core.normalizeSessionStatus("idle"), "idle");
+  assert.equal(core.normalizeSessionStatus("nonsense"), "unknown");
+});
+
+test("updateSessionStatus persists sanitized self-reported state", () => {
+  const paths = core.buildPaths(tempHome());
+  const result = core.updateSessionStatus({
+    pid: 123,
+    name: "agent",
+    cwd: "/repo/agent",
+    status: "working",
+    currentTask: "Implement retained inbox",
+    dispatchId: "dispatch-1",
+    blockedOn: "none",
+    summary: "green so far",
+  }, { stateFile: paths.stateFile });
+
+  assert.equal(result.status, "working");
+  assert.equal(result.currentTask, "Implement retained inbox");
+  assert.equal(fileMode(paths.stateFile), 0o600);
+
+  const state = core.readBridgeState(paths.stateFile);
+  assert.equal(state.sessions["pid:123"].dispatchId, "dispatch-1");
+});
+
+test("getGitState reports branch dirty counts and head commit", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "git-state-"));
+  const run = (cmd) => require("node:child_process").execFileSync(cmd[0], cmd.slice(1), { cwd: dir, encoding: "utf-8" });
+  run(["git", "init", "-b", "master"]);
+  run(["git", "config", "user.email", "test@example.com"]);
+  run(["git", "config", "user.name", "Test User"]);
+  fs.writeFileSync(path.join(dir, "file.txt"), "one\n");
+  run(["git", "add", "file.txt"]);
+  run(["git", "commit", "-m", "initial"]);
+  fs.writeFileSync(path.join(dir, "untracked.txt"), "new\n");
+
+  const state = core.getGitState(dir, { includePr: false });
+  assert.equal(state.isRepo, true);
+  assert.equal(state.branch, "master");
+  assert.equal(state.untracked, 1);
+  assert.match(state.head, /^[a-f0-9]{7,40}$/);
+  assert.equal(state.headSubject, "initial");
+});
+
+test("buildSessionStateReport combines registry state self-report and git summary", () => {
+  const paths = core.buildPaths(tempHome());
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "state-report-"));
+  core.writeRegistry({ sessions: [
+    { pid: process.pid, name: "agent", cwd, socketPath: path.join(paths.ipcDir, `${process.pid}.sock`), startedAt: Date.now() - 60000, readerKey: `pi:${process.pid}`, lastHeartbeatAt: Date.now() },
+  ] }, paths.registryFile);
+  core.updateSessionStatus({
+    pid: process.pid,
+    name: "agent",
+    cwd,
+    status: "working",
+    currentTask: "Testing report",
+    blockedOn: "none",
+  }, { stateFile: paths.stateFile });
+
+  const report = core.buildSessionStateReport("agent", {
+    registryFile: paths.registryFile,
+    stateFile: paths.stateFile,
+    includeGit: false,
+  });
+
+  assert.equal(report.status, "found");
+  assert.match(report.text, /agent pid:/);
+  assert.match(report.text, /status: working/);
+  assert.match(report.text, /currentTask: Testing report/);
+});
+
 test("setSessionVisibility updates one live registry entry and preserves other sessions", () => {
   const paths = core.buildPaths(tempHome());
   core.writeRegistry({ sessions: [
@@ -598,6 +844,47 @@ test("doctorIpcPermissions reports but does not chmod symlink extra files", () =
   const result = core.doctorIpcPermissions({ ipcDir: path.join(dir, "ipc"), fix: true, extraFiles: [link] });
 
   assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+  assert.equal(result.findings.some((finding) => finding.path === link && finding.issue === "symbolic-link"), true);
+});
+
+test("diagnoseShimVersions reports stale local shim hashes", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shim-diag-"));
+  const packageRoot = path.join(dir, "pkg");
+  const localRoot = path.join(dir, "agent");
+  fs.mkdirSync(path.join(packageRoot, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "lib"), { recursive: true });
+  fs.mkdirSync(path.join(localRoot, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(localRoot, "lib"), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, "bin", "pimsg"), "same");
+  fs.writeFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "pkg");
+  fs.writeFileSync(path.join(packageRoot, "lib", "pi-bridge-core.js"), "core-new");
+  fs.writeFileSync(path.join(localRoot, "bin", "pimsg"), "same");
+  fs.writeFileSync(path.join(localRoot, "bin", "pi-cc-bridge"), "old");
+  fs.writeFileSync(path.join(localRoot, "lib", "pi-bridge-core.js"), "core-old");
+
+  const result = core.diagnoseShimVersions({
+    packageRoot,
+    agentRoot: localRoot,
+  });
+  const stale = result.files
+    .filter((file) => file.status === "stale")
+    .map((file) => file.name)
+    .sort();
+  assert.deepEqual(stale, ["lib/pi-bridge-core.js", "pi-cc-bridge"]);
+  assert.equal(result.ok, false);
+});
+
+test("doctorIpcPermissions reports bridge-owned ipc symlink entries", () => {
+  const home = tempHome();
+  const paths = core.buildPaths(home);
+  core.ensureIpcDir(paths.ipcDir);
+  const target = path.join(home, "events-target.jsonl");
+  fs.writeFileSync(target, "");
+  const link = path.join(paths.ipcDir, "bridge-events.jsonl");
+  fs.symlinkSync(target, link);
+
+  const result = core.doctorIpcPermissions({ ipcDir: paths.ipcDir, fix: true });
+
   assert.equal(result.findings.some((finding) => finding.path === link && finding.issue === "symbolic-link"), true);
 });
 

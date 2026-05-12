@@ -188,6 +188,60 @@ test("retained inbox consume advances only the selected reader cursor", () => {
   assert.equal(fileMode(paths.cursorsFile), 0o600);
 });
 
+test("retained inbox cursor follows append order when timestamps tie", () => {
+  const paths = core.buildPaths(tempHome());
+  core.appendBridgeEvent(
+    {
+      eventId: "evt_z",
+      kind: "message.accepted",
+      messageId: "msg_first",
+      from: { pid: 1, name: "sender", cwd: "/sender" },
+      to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:repo" },
+      content: "first",
+      acceptedAt: 1000,
+    },
+    { eventsFile: paths.eventsFile },
+  );
+  const firstRead = core.readInboxEvents({
+    readerKey: "cc:repo",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  assert.equal(core.consumeInboxEvents(firstRead), true);
+
+  core.appendBridgeEvent(
+    {
+      eventId: "evt_a",
+      kind: "message.accepted",
+      messageId: "msg_second",
+      from: { pid: 1, name: "sender", cwd: "/sender" },
+      to: { pid: 2, name: "receiver", cwd: "/receiver", readerKey: "cc:repo" },
+      content: "second",
+      acceptedAt: 1000,
+    },
+    { eventsFile: paths.eventsFile },
+  );
+
+  const secondRead = core.readInboxEvents({
+    readerKey: "cc:repo",
+    eventsFile: paths.eventsFile,
+    cursorsFile: paths.cursorsFile,
+  });
+  assert.deepEqual(secondRead.events.map((event) => event.messageId), ["msg_second"]);
+});
+
+test("recordAcceptedBridgeMessage uses local acceptance time for cursor safety", () => {
+  const paths = core.buildPaths(tempHome());
+  const before = Date.now();
+  const recorded = core.recordAcceptedBridgeMessage({
+    message: sampleMessage({ id: "msg_old_sender", timestamp: 1 }),
+    to: { pid: 888, name: "receiver", cwd: "/receiver", readerKey: "pi:888" },
+    eventsFile: paths.eventsFile,
+  });
+
+  assert.ok(recorded.event.acceptedAt >= before);
+});
+
 test("message duplicate detection labels repeated message ids", () => {
   const paths = core.buildPaths(tempHome());
   const first = core.recordAcceptedBridgeMessage({

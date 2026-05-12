@@ -908,7 +908,6 @@ function recordAcceptedBridgeMessage(options = {}) {
     dispatchId: message.dispatchId,
     content: message.content,
     duplicateOf: existing ? existing.eventId : null,
-    acceptedAt: message.timestamp,
   }, { eventsFile });
   return { duplicate: Boolean(existing), event };
 }
@@ -933,14 +932,13 @@ function readInboxEvents(options = {}) {
   const cursors = readBridgeCursors(cursorsFile);
   const cursor = cursors[readerKey] || { acceptedAt: 0, eventId: "" };
   const allEvents = readBridgeEvents({ eventsFile });
-  const events = allEvents.filter((event) => {
-    const eventReader = normalizeReaderKey(event && event.to && event.to.readerKey);
-    if (eventReader !== readerKey) return false;
-    if (options.all === true) return true;
-    if ((event.acceptedAt || 0) > (cursor.acceptedAt || 0)) return true;
-    if ((event.acceptedAt || 0) === (cursor.acceptedAt || 0) && String(event.eventId) > String(cursor.eventId || "")) return true;
-    return false;
-  });
+  const cursorIndex = cursor.eventId ? allEvents.findIndex((event) => event.eventId === cursor.eventId) : -1;
+  const candidateEvents = options.all === true
+    ? allEvents
+    : cursorIndex >= 0
+      ? allEvents.slice(cursorIndex + 1)
+      : allEvents.filter((event) => (event.acceptedAt || 0) > (cursor.acceptedAt || 0));
+  const events = candidateEvents.filter((event) => normalizeReaderKey(event && event.to && event.to.readerKey) === readerKey);
   return { readerKey, events, cursorsFile, latest: events[events.length - 1] };
 }
 

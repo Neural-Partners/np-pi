@@ -66,3 +66,11 @@ test("pimsg state reports self-reported status and list --with-status includes c
   assert.equal(list.status, 0, list.stderr);
   assert.match(list.stdout, /\[working\]/);
 });
+
+test("pimsg doctor reports shim diagnostics", () => {
+  const home = tempHome();
+  const result = runPimsg(home, ["doctor"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /pi-bridge IPC permissions/);
+  assert.match(result.stdout, /Shim diagnostics/);
+});

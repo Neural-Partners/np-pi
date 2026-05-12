@@ -793,6 +793,33 @@ test("doctorIpcPermissions reports but does not chmod symlink extra files", () =
   assert.equal(result.findings.some((finding) => finding.path === link && finding.issue === "symbolic-link"), true);
 });
 
+test("diagnoseShimVersions reports stale local shim hashes", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shim-diag-"));
+  const packageRoot = path.join(dir, "pkg");
+  const localRoot = path.join(dir, "agent");
+  fs.mkdirSync(path.join(packageRoot, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "lib"), { recursive: true });
+  fs.mkdirSync(path.join(localRoot, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(localRoot, "lib"), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, "bin", "pimsg"), "same");
+  fs.writeFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "pkg");
+  fs.writeFileSync(path.join(packageRoot, "lib", "pi-bridge-core.js"), "core-new");
+  fs.writeFileSync(path.join(localRoot, "bin", "pimsg"), "same");
+  fs.writeFileSync(path.join(localRoot, "bin", "pi-cc-bridge"), "old");
+  fs.writeFileSync(path.join(localRoot, "lib", "pi-bridge-core.js"), "core-old");
+
+  const result = core.diagnoseShimVersions({
+    packageRoot,
+    agentRoot: localRoot,
+  });
+  const stale = result.files
+    .filter((file) => file.status === "stale")
+    .map((file) => file.name)
+    .sort();
+  assert.deepEqual(stale, ["lib/pi-bridge-core.js", "pi-cc-bridge"]);
+  assert.equal(result.ok, false);
+});
+
 test("formatNoticeWithControls appends an explicit dismiss footer", () => {
   const notice = core.formatNoticeWithControls("Active Pi sessions:\n  • backend", {
     action: "Use /bridge-send <target> <message> to send a message.",

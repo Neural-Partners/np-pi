@@ -1154,6 +1154,72 @@ function doctorIpcPermissions(options = {}) {
   return { ipcDir, fixed: fix, findings };
 }
 
+function fileHash(file) {
+  try {
+    return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
+function diagnoseShimVersions(options = {}) {
+  const packageRoot = options.packageRoot || path.resolve(__dirname, "..");
+  const agentRoot = options.agentRoot || path.join(os.homedir(), ".pi", "agent");
+  const files = [
+    {
+      name: "pimsg",
+      packagePath: path.join(packageRoot, "bin", "pimsg"),
+      localPath: path.join(agentRoot, "bin", "pimsg"),
+    },
+    {
+      name: "pi-cc-bridge",
+      packagePath: path.join(packageRoot, "bin", "pi-cc-bridge"),
+      localPath: path.join(agentRoot, "bin", "pi-cc-bridge"),
+    },
+    {
+      name: "lib/pi-bridge-core.js",
+      packagePath: path.join(packageRoot, "lib", "pi-bridge-core.js"),
+      localPath: path.join(agentRoot, "lib", "pi-bridge-core.js"),
+    },
+  ].map((file) => {
+    const packageHash = fileHash(file.packagePath);
+    const localHash = fileHash(file.localPath);
+    const status = !localHash ? "missing" : packageHash === localHash ? "current" : "stale";
+    return { ...file, packageHash, localHash, status };
+  });
+  return {
+    agentRoot,
+    packageRoot,
+    ok: files.every((file) => file.status === "current"),
+    files,
+  };
+}
+
+function formatShimDiagnostics(result) {
+  const lines = ["Shim diagnostics:"];
+  for (const file of result.files) {
+    lines.push(
+      `  ${file.name}: ${file.status}${file.localHash ? ` local:${file.localHash.slice(0, 12)}` : ""}${file.packageHash ? ` package:${file.packageHash.slice(0, 12)}` : ""}`,
+    );
+  }
+  if (!result.ok) lines.push("  Run: pimsg doctor --sync-shims");
+  return lines.join("\n");
+}
+
+function syncLocalShims(options = {}) {
+  const diagnostics = diagnoseShimVersions(options);
+  for (const file of diagnostics.files) {
+    fs.mkdirSync(path.dirname(file.localPath), {
+      recursive: true,
+      mode: 0o700,
+    });
+    assertNotSymlink(file.localPath);
+    fs.copyFileSync(file.packagePath, file.localPath);
+    chmodSafe(file.localPath, file.name === "lib/pi-bridge-core.js" ? 0o600 : 0o755);
+  }
+  return diagnoseShimVersions(options);
+}
+
 function writePidMetadata(file, metadata) {
   secureWriteFile(file, JSON.stringify({ ...metadata, writtenAt: Date.now() }, null, 2));
 }
@@ -1357,6 +1423,7 @@ module.exports = {
   decideMessageDelivery,
   defaultBridgePolicy,
   defaultFocusPolicy,
+  diagnoseShimVersions,
   doctorIpcPermissions,
   duplicateCwdWarnings,
   ensureIpcDir,
@@ -1368,6 +1435,7 @@ module.exports = {
   formatInboxHookPayload,
   formatMailboxNotice,
   formatNoticeWithControls,
+  formatShimDiagnostics,
   getFrontmostAppName,
   getGitState,
   getProcessCommand,
@@ -1406,6 +1474,7 @@ module.exports = {
   setSessionVisibility,
   stateSessionKey,
   shouldFocusSession,
+  syncLocalShims,
   truncateContent,
   unregisterSession,
   updateSessionStatus,

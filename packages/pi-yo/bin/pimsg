@@ -60,7 +60,7 @@ function printHelp() {
     "  pimsg state <target|--all>         Show bridge state for one or all sessions",
     "  pimsg <target> <message...>        Send a message to a session",
     "  pimsg --reply <target> <message..> Send a reply (no further reply expected)",
-    "  pimsg doctor [--fix]              Inspect or repair pi-bridge IPC permissions",
+    "  pimsg doctor [--fix] [--sync-shims] Inspect or repair IPC permissions and local shims",
     "",
     "<target> can be a session name, PID, or working directory basename.",
     "Ambiguous fuzzy targets fail closed and print candidate sessions.",
@@ -141,6 +141,7 @@ async function main() {
 
   if (args[0] === "doctor") {
     const fix = args.includes("--fix");
+    const syncShims = args.includes("--sync-shims");
     const result = core.doctorIpcPermissions({
       fix,
       extraFiles: [
@@ -157,6 +158,12 @@ async function main() {
         console.log(`  ${finding.path} ${finding.actualMode.toString(8)} -> ${finding.expectedMode.toString(8)}${fix ? " fixed" : ""}`);
       }
       if (!fix) console.log("Run: pimsg doctor --fix");
+    }
+    if (syncShims) {
+      const synced = core.syncLocalShims();
+      console.log(core.formatShimDiagnostics(synced));
+    } else {
+      console.log(core.formatShimDiagnostics(core.diagnoseShimVersions()));
     }
     return;
   }

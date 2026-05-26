@@ -121,6 +121,26 @@ test("extension exposes self visibility controls", () => {
   }
 });
 
+test("extension exposes local chatroom command and tools", () => {
+  const extensionPath = path.join(packageRoot, "extensions", "pi-bridge.ts");
+  const extension = fs.readFileSync(extensionPath, "utf-8");
+
+  for (const required of [
+    'registerCommand("room"',
+    'name: "join_chat_room"',
+    'name: "post_room_message"',
+    'name: "follow_room_thread"',
+    'name: "set_room_notifications"',
+    'name: "list_chat_rooms"',
+    "joinRoom",
+    "postRoomMessage",
+    "followRoomThread",
+    "setRoomNotifications",
+  ]) {
+    assert.match(extension, new RegExp(escapeRegExp(required)));
+  }
+});
+
 test("package syntax script typechecks the Pi extension", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(packageRoot, "package.json"), "utf-8"),

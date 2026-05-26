@@ -912,3 +912,62 @@ test("formatMailboxNotice explains close controls and mailbox clearing", () => {
   assert.match(empty, /Bridge mailbox is empty/);
   assert.match(empty, /Controls:/);
 });
+
+test("room helpers normalize ids and register stable members", () => {
+  const paths = core.buildPaths(tempHome());
+  const joined = core.joinRoom(
+    {
+      room: "NP Pi Rooms!",
+      name: "Principal TL",
+      kind: "pi",
+      session: { pid: 123, name: "np-pi", cwd: "/repo/np-pi" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.equal(joined.room.roomId, "np-pi-rooms");
+  assert.equal(joined.member.memberId, "principal-tl");
+  assert.equal(joined.member.displayName, "Principal TL");
+  assert.equal(fileMode(paths.roomStateFile), 0o600);
+  assert.equal(fileMode(paths.roomEventsFile), 0o600);
+
+  const rejoined = core.joinRoom(
+    {
+      room: "np-pi-rooms",
+      name: "Principal TL",
+      kind: "pi",
+      session: { pid: 456, name: "np-pi renamed", cwd: "/repo/np-pi" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.equal(Object.keys(core.readRoomState(paths.roomStateFile).rooms["np-pi-rooms"].members).length, 1);
+  assert.equal(rejoined.member.sessionPid, 456);
+});
+
+test("posting a room message appends thread-aware events with mentions and assignments", () => {
+  const paths = core.buildPaths(tempHome());
+  core.joinRoom(
+    {
+      room: "np-pi",
+      name: "principal",
+      session: { pid: 1, name: "principal", cwd: "/repo" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  const posted = core.postRoomMessage(
+    {
+      room: "np-pi",
+      from: { name: "principal", session: { pid: 1, name: "principal", cwd: "/repo" } },
+      content: "@worker please review !assign @reviewer",
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.match(posted.event.eventId, /^room_evt_/);
+  assert.match(posted.event.threadId, /^thr_/);
+  assert.deepEqual(posted.event.mentions, ["worker", "reviewer"]);
+  assert.deepEqual(posted.event.assignments, ["reviewer"]);
+  assert.equal(core.readRoomEvents({ eventsFile: paths.roomEventsFile }).length, 2);
+});

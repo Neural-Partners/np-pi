@@ -59,6 +59,9 @@ function buildPaths(home = os.homedir()) {
     eventsFile: path.join(ipcDir, "bridge-events.jsonl"),
     cursorsFile: path.join(ipcDir, "bridge-cursors.json"),
     stateFile: path.join(ipcDir, "bridge-state.json"),
+    roomStateFile: path.join(ipcDir, "room-state.json"),
+    roomEventsFile: path.join(ipcDir, "room-events.jsonl"),
+    roomCursorsFile: path.join(ipcDir, "room-cursors.json"),
   };
 }
 
@@ -257,6 +260,9 @@ function bridgeOwnedIpcFile(fileName) {
     fileName === "bridge-events.jsonl" ||
     fileName === "bridge-cursors.json" ||
     fileName === "bridge-state.json" ||
+    fileName === "room-state.json" ||
+    fileName === "room-events.jsonl" ||
+    fileName === "room-cursors.json" ||
     /^\d+\.sock$/.test(fileName) ||
     /^cc-[a-f0-9]{8}\.(sock|pid|mailbox|log|json)$/.test(fileName)
   );
@@ -1018,6 +1024,227 @@ function formatInboxHookPayload(events) {
   }, null, 2);
 }
 
+function slugifyRoomValue(value, fallback) {
+  const safe = sanitizeMetadata(value || fallback, 256)
+    .toLowerCase()
+    .replace(/[^a-z0-9._~-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+  return safe || fallback;
+}
+
+function normalizeRoomId(value) {
+  return slugifyRoomValue(value, "project");
+}
+
+function normalizeRoomMemberId(value) {
+  return slugifyRoomValue(value, "member");
+}
+
+function normalizeRoomKind(value) {
+  return value === "cc" || value === "human" || value === "pi" ? value : "pi";
+}
+
+function defaultRoomState() {
+  return { schemaVersion: 1, rooms: {} };
+}
+
+function readRoomState(stateFile = DEFAULT_PATHS.roomStateFile) {
+  try {
+    assertNotSymlink(stateFile);
+    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
+    return {
+      schemaVersion: 1,
+      rooms: parsed && parsed.rooms && typeof parsed.rooms === "object" && !Array.isArray(parsed.rooms)
+        ? parsed.rooms
+        : {},
+    };
+  } catch {
+    return defaultRoomState();
+  }
+}
+
+function writeRoomState(state, stateFile = DEFAULT_PATHS.roomStateFile) {
+  const safeState = {
+    schemaVersion: 1,
+    rooms: state && state.rooms && typeof state.rooms === "object" && !Array.isArray(state.rooms)
+      ? state.rooms
+      : {},
+  };
+  secureWriteFile(stateFile, JSON.stringify(safeState, null, 2));
+}
+
+function appendRoomEvent(input = {}, options = {}) {
+  const eventsFile = options.eventsFile || DEFAULT_PATHS.roomEventsFile;
+  const now = Date.now();
+  const event = {
+    schemaVersion: 1,
+    eventId: input.eventId || newEventId("room_evt"),
+    kind: input.kind || "room.message",
+    roomId: normalizeRoomId(input.roomId || input.room),
+    threadId: input.threadId ? sanitizeMetadata(input.threadId, 256) : undefined,
+    parentId: input.parentId ? sanitizeMetadata(input.parentId, 256) : null,
+    createdAt: Number.isFinite(input.createdAt) ? input.createdAt : now,
+    from: input.from || undefined,
+    content: input.content === undefined ? undefined : truncateContent(input.content).text,
+    mentions: Array.isArray(input.mentions) ? input.mentions.map(normalizeRoomMemberId).filter(Boolean) : [],
+    assignments: Array.isArray(input.assignments) ? input.assignments.map(normalizeRoomMemberId).filter(Boolean) : [],
+    urgent: input.urgent === true,
+  };
+  appendFileSecure(eventsFile, JSON.stringify(event) + "\n", {
+    maxBytes: options.maxBytes || DEFAULT_TOOL_USAGE_MAX_BYTES,
+    backups: options.backups || DEFAULT_TOOL_USAGE_BACKUPS,
+  });
+  return event;
+}
+
+function readRoomEvents(options = {}) {
+  const eventsFile = options.eventsFile || DEFAULT_PATHS.roomEventsFile;
+  try {
+    assertNotSymlink(eventsFile);
+    const raw = fs.readFileSync(eventsFile, "utf-8");
+    const events = [];
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && typeof parsed.eventId === "string") events.push(parsed);
+      } catch {
+        // Ignore malformed room event lines, matching retained inbox tolerance.
+      }
+    }
+    return events;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+function roomSessionMetadata(session = {}) {
+  return {
+    sessionPid: Number.isSafeInteger(session.pid) && session.pid > 0 ? session.pid : undefined,
+    sessionName: sanitizeMetadata(session.name, 200),
+    sessionCwd: sanitizeMetadata(session.cwd || process.cwd(), 2048),
+  };
+}
+
+function upsertRoomMember(input = {}, options = {}) {
+  const stateFile = options.stateFile || DEFAULT_PATHS.roomStateFile;
+  const state = readRoomState(stateFile);
+  const session = input.session || {};
+  const roomId = normalizeRoomId(input.room || input.roomId || path.basename(session.cwd || process.cwd()));
+  const displayName = sanitizeMetadata(input.name || session.name || path.basename(session.cwd || process.cwd()), 200);
+  const memberId = normalizeRoomMemberId(input.memberId || displayName);
+  const now = Date.now();
+  const existingRoom = state.rooms[roomId];
+  const room = existingRoom || {
+    roomId,
+    title: sanitizeMetadata(input.title || input.room || roomId, 200),
+    projectCwd: sanitizeMetadata(input.projectCwd || session.cwd || process.cwd(), 2048),
+    createdAt: now,
+    members: {},
+  };
+  if (!room.members || typeof room.members !== "object" || Array.isArray(room.members)) room.members = {};
+
+  const existing = room.members[memberId] || {};
+  const member = {
+    ...existing,
+    memberId,
+    displayName: existing.displayName || displayName,
+    kind: normalizeRoomKind(input.kind || existing.kind),
+    ...roomSessionMetadata(session),
+    alertMode: existing.alertMode || "mentions",
+    dnd: existing.dnd === true,
+    followedThreads: Array.isArray(existing.followedThreads) ? existing.followedThreads : [],
+    joinedAt: existing.joinedAt || now,
+    lastSeenAt: now,
+  };
+
+  room.members[memberId] = member;
+  state.rooms[roomId] = room;
+  writeRoomState(state, stateFile);
+  return { state, room, member, roomId, memberId, isNewMember: !existing.memberId };
+}
+
+function joinRoom(input = {}, options = {}) {
+  const result = upsertRoomMember(input, options);
+  const event = appendRoomEvent({
+    kind: "room.member.joined",
+    roomId: result.roomId,
+    from: {
+      memberId: result.member.memberId,
+      displayName: result.member.displayName,
+      sessionPid: result.member.sessionPid,
+      sessionName: result.member.sessionName,
+      sessionCwd: result.member.sessionCwd,
+    },
+    content: `${result.member.displayName} joined ${result.roomId}`,
+  }, options);
+  return { ...result, event };
+}
+
+function parseRoomMessageDirectives(content) {
+  const text = String(content || "");
+  const mentions = [];
+  const assignments = [];
+  const seenMentions = new Set();
+  const seenAssignments = new Set();
+
+  for (const match of text.matchAll(/@([A-Za-z0-9._~-]+)/g)) {
+    const memberId = normalizeRoomMemberId(match[1]);
+    if (!seenMentions.has(memberId)) {
+      seenMentions.add(memberId);
+      mentions.push(memberId);
+    }
+  }
+
+  for (const assignment of text.matchAll(/!assign\s+((?:@[A-Za-z0-9._~-]+\s*)+)/g)) {
+    for (const match of assignment[1].matchAll(/@([A-Za-z0-9._~-]+)/g)) {
+      const memberId = normalizeRoomMemberId(match[1]);
+      if (!seenAssignments.has(memberId)) {
+        seenAssignments.add(memberId);
+        assignments.push(memberId);
+      }
+    }
+  }
+
+  return { mentions, assignments };
+}
+
+function postRoomMessage(input = {}, options = {}) {
+  const fromInput = input.from || {};
+  const memberResult = upsertRoomMember({
+    room: input.room || input.roomId,
+    name: fromInput.name || input.name,
+    memberId: fromInput.memberId,
+    kind: fromInput.kind || input.kind,
+    session: fromInput.session || input.session || {},
+  }, options);
+  const directives = parseRoomMessageDirectives(input.content);
+  const threadId = input.threadId
+    ? sanitizeMetadata(input.threadId, 256)
+    : newEventId("thr");
+  const event = appendRoomEvent({
+    kind: "room.message",
+    roomId: memberResult.roomId,
+    threadId,
+    parentId: input.parentId || null,
+    from: {
+      memberId: memberResult.member.memberId,
+      displayName: memberResult.member.displayName,
+      sessionPid: memberResult.member.sessionPid,
+      sessionName: memberResult.member.sessionName,
+      sessionCwd: memberResult.member.sessionCwd,
+    },
+    content: input.content || "",
+    mentions: directives.mentions,
+    assignments: directives.assignments,
+    urgent: input.urgent === true,
+  }, options);
+  return { room: memberResult.room, member: memberResult.member, event };
+}
+
 const SESSION_STATUSES = Object.freeze(["idle", "working", "blocked", "review", "done", "unknown"]);
 
 function normalizeSessionStatus(value) {
@@ -1436,6 +1663,7 @@ module.exports = {
   activeSessions,
   appendBridgeEvent,
   appendFileSecure,
+  appendRoomEvent,
   buildOneSessionStateText,
   buildPaths,
   buildSessionStateReport,
@@ -1469,6 +1697,7 @@ module.exports = {
   isExpectedDaemonProcess,
   isProcessAlive,
   isSessionVisible,
+  joinRoom,
   maybeFocusSession,
   messageIdentityKey,
   newEventId,
@@ -1476,10 +1705,13 @@ module.exports = {
   normalizeBridgePolicy,
   normalizeBridgeVisibility,
   normalizeReaderKey,
+  normalizeRoomId,
+  normalizeRoomMemberId,
   normalizeSessionStatus,
   normalizeFocusPolicy,
   openSecureFile,
   openSupacodeTab,
+  postRoomMessage,
   pruneDeadSessions,
   readAndClearFileAtomic,
   readBridgeCursors,
@@ -1489,6 +1721,8 @@ module.exports = {
   readPidMetadata,
   readInboxEvents,
   readRegistry,
+  readRoomEvents,
+  readRoomState,
   recordAcceptedBridgeMessage,
   registerSession,
   resolveSessionTarget,
@@ -1512,4 +1746,5 @@ module.exports = {
   writeBridgeState,
   writePidMetadata,
   writeRegistry,
+  writeRoomState,
 };

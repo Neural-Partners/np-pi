@@ -946,6 +946,37 @@ test("room helpers normalize ids and register stable members", () => {
   assert.equal(rejoined.member.sessionPid, 456);
 });
 
+test("room state mutations use a room-specific lock", () => {
+  const paths = core.buildPaths(tempHome());
+  core.ensureIpcDir(paths.ipcDir);
+  const lockFile = `${paths.roomStateFile}.lock`;
+  const fd = fs.openSync(lockFile, "wx", 0o600);
+
+  try {
+    assert.throws(
+      () => core.joinRoom(
+        { room: "np-pi", name: "blocked" },
+        {
+          stateFile: paths.roomStateFile,
+          eventsFile: paths.roomEventsFile,
+          lockTimeoutMs: 25,
+          lockRetryMs: 5,
+        },
+      ),
+      /Failed to acquire lock/,
+    );
+  } finally {
+    fs.closeSync(fd);
+    fs.unlinkSync(lockFile);
+  }
+
+  const joined = core.joinRoom(
+    { room: "np-pi", name: "principal" },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+  assert.equal(joined.member.memberId, "principal");
+});
+
 test("posting a room message appends thread-aware events with mentions and assignments", () => {
   const paths = core.buildPaths(tempHome());
   core.joinRoom(
@@ -1099,6 +1130,64 @@ test("deliverRoomAlerts sends only selected recipients through bridge sockets", 
   assert.match(sent[0].message.content, /@worker please review/);
   assert.equal(result.deliveries[0].member.memberId, "worker");
   assert.equal(result.skipped.length, 0);
+});
+
+test("deliverRoomAlerts refuses ambiguous same-cwd fallback", async () => {
+  const state = {
+    schemaVersion: 1,
+    rooms: {
+      "np-pi": {
+        roomId: "np-pi",
+        title: "np-pi",
+        projectCwd: "/repo/np-pi",
+        members: {
+          principal: { memberId: "principal", displayName: "principal", sessionPid: 111, alertMode: "mentions", followedThreads: [], dnd: false },
+          worker: { memberId: "worker", displayName: "worker", sessionPid: 999, sessionCwd: "/repo/np-pi", alertMode: "mentions", followedThreads: [], dnd: false },
+        },
+      },
+    },
+  };
+  const event = {
+    roomId: "np-pi",
+    threadId: "thr_1",
+    from: { memberId: "principal", displayName: "principal" },
+    content: "@worker please review",
+    mentions: ["worker"],
+    assignments: [],
+    urgent: false,
+  };
+  const sendToSocket = async () => {
+    throw new Error("should not send to ambiguous cwd match");
+  };
+
+  const ambiguous = await core.deliverRoomAlerts(event, {
+    state,
+    sessions: [
+      { pid: 222, name: "other", cwd: "/repo/np-pi", socketPath: "/tmp/222.sock", startedAt: 1 },
+      { pid: 333, name: "observer", cwd: "/repo/np-pi", socketPath: "/tmp/333.sock", startedAt: 1 },
+    ],
+    sendToSocket,
+  });
+
+  assert.equal(ambiguous.deliveries.length, 0);
+  assert.equal(ambiguous.skipped.length, 1);
+  assert.match(ambiguous.skipped[0].reason, /no active bridge session/);
+
+  const sent = [];
+  const named = await core.deliverRoomAlerts(event, {
+    state,
+    sessions: [
+      { pid: 222, name: "worker", cwd: "/repo/np-pi", socketPath: "/tmp/222.sock", startedAt: 1 },
+      { pid: 333, name: "observer", cwd: "/repo/np-pi", socketPath: "/tmp/333.sock", startedAt: 1 },
+    ],
+    sendToSocket: async (socketPath, message) => {
+      sent.push({ socketPath, message });
+      return { acked: true, response: { type: "ack" } };
+    },
+  });
+
+  assert.deepEqual(sent.map((item) => item.socketPath), ["/tmp/222.sock"]);
+  assert.equal(named.deliveries.length, 1);
 });
 
 test("piroom join post and manager --once render a local room", () => {

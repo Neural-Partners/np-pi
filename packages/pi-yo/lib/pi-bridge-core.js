@@ -209,7 +209,7 @@ function withRegistryLock(registryFile = DEFAULT_PATHS.registryFile, fn, options
       chmodSafe(lockFile, 0o600);
     } catch (err) {
       if (!err || err.code !== "EEXIST" || Date.now() >= deadline) {
-        throw new Error(`Failed to acquire registry lock ${lockFile}: ${err && err.message ? err.message : err}`);
+        throw new Error(`Failed to acquire lock ${lockFile}: ${err && err.message ? err.message : err}`);
       }
       sleepSync(retryMs);
     }
@@ -1064,6 +1064,14 @@ function readRoomState(stateFile = DEFAULT_PATHS.roomStateFile) {
   }
 }
 
+function withRoomStateLock(stateFile = DEFAULT_PATHS.roomStateFile, fn, options = {}) {
+  return withRegistryLock(stateFile, fn, {
+    lockFile: options.lockFile || `${stateFile}.lock`,
+    timeoutMs: options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+    retryMs: options.lockRetryMs ?? DEFAULT_LOCK_RETRY_MS,
+  });
+}
+
 function writeRoomState(state, stateFile = DEFAULT_PATHS.roomStateFile) {
   const safeState = {
     schemaVersion: 1,
@@ -1131,40 +1139,42 @@ function roomSessionMetadata(session = {}) {
 
 function upsertRoomMember(input = {}, options = {}) {
   const stateFile = options.stateFile || DEFAULT_PATHS.roomStateFile;
-  const state = readRoomState(stateFile);
-  const session = input.session || {};
-  const roomId = normalizeRoomId(input.room || input.roomId || path.basename(session.cwd || process.cwd()));
-  const displayName = sanitizeMetadata(input.name || session.name || path.basename(session.cwd || process.cwd()), 200);
-  const memberId = normalizeRoomMemberId(input.memberId || displayName);
-  const now = Date.now();
-  const existingRoom = state.rooms[roomId];
-  const room = existingRoom || {
-    roomId,
-    title: sanitizeMetadata(input.title || input.room || roomId, 200),
-    projectCwd: sanitizeMetadata(input.projectCwd || session.cwd || process.cwd(), 2048),
-    createdAt: now,
-    members: {},
-  };
-  if (!room.members || typeof room.members !== "object" || Array.isArray(room.members)) room.members = {};
+  return withRoomStateLock(stateFile, () => {
+    const state = readRoomState(stateFile);
+    const session = input.session || {};
+    const roomId = normalizeRoomId(input.room || input.roomId || path.basename(session.cwd || process.cwd()));
+    const displayName = sanitizeMetadata(input.name || session.name || path.basename(session.cwd || process.cwd()), 200);
+    const memberId = normalizeRoomMemberId(input.memberId || displayName);
+    const now = Date.now();
+    const existingRoom = state.rooms[roomId];
+    const room = existingRoom || {
+      roomId,
+      title: sanitizeMetadata(input.title || input.room || roomId, 200),
+      projectCwd: sanitizeMetadata(input.projectCwd || session.cwd || process.cwd(), 2048),
+      createdAt: now,
+      members: {},
+    };
+    if (!room.members || typeof room.members !== "object" || Array.isArray(room.members)) room.members = {};
 
-  const existing = room.members[memberId] || {};
-  const member = {
-    ...existing,
-    memberId,
-    displayName: existing.displayName || displayName,
-    kind: normalizeRoomKind(input.kind || existing.kind),
-    ...roomSessionMetadata(session),
-    alertMode: existing.alertMode || "mentions",
-    dnd: existing.dnd === true,
-    followedThreads: Array.isArray(existing.followedThreads) ? existing.followedThreads : [],
-    joinedAt: existing.joinedAt || now,
-    lastSeenAt: now,
-  };
+    const existing = room.members[memberId] || {};
+    const member = {
+      ...existing,
+      memberId,
+      displayName: existing.displayName || displayName,
+      kind: normalizeRoomKind(input.kind || existing.kind),
+      ...roomSessionMetadata(session),
+      alertMode: existing.alertMode || "mentions",
+      dnd: existing.dnd === true,
+      followedThreads: Array.isArray(existing.followedThreads) ? existing.followedThreads : [],
+      joinedAt: existing.joinedAt || now,
+      lastSeenAt: now,
+    };
 
-  room.members[memberId] = member;
-  state.rooms[roomId] = room;
-  writeRoomState(state, stateFile);
-  return { state, room, member, roomId, memberId, isNewMember: !existing.memberId };
+    room.members[memberId] = member;
+    state.rooms[roomId] = room;
+    writeRoomState(state, stateFile);
+    return { state, room, member, roomId, memberId, isNewMember: !existing.memberId };
+  }, options);
 }
 
 function joinRoom(input = {}, options = {}) {
@@ -1269,6 +1279,7 @@ function ensureRoomAndMember(state, input = {}) {
     memberId,
     displayName: existing.displayName || sanitizeMetadata(input.name || memberId, 200),
     kind: normalizeRoomKind(input.kind || existing.kind),
+    ...(input.session ? roomSessionMetadata(input.session) : {}),
     alertMode: normalizeRoomAlertMode(input.alertMode || existing.alertMode),
     dnd: existing.dnd === true,
     followedThreads: Array.isArray(existing.followedThreads) ? existing.followedThreads : [],
@@ -1282,14 +1293,18 @@ function ensureRoomAndMember(state, input = {}) {
 
 function followRoomThread(input = {}, options = {}) {
   const stateFile = options.stateFile || DEFAULT_PATHS.roomStateFile;
-  const state = readRoomState(stateFile);
-  const result = ensureRoomAndMember(state, input);
+  const result = withRoomStateLock(stateFile, () => {
+    const state = readRoomState(stateFile);
+    const lockedResult = ensureRoomAndMember(state, input);
+    const threadId = sanitizeMetadata(input.threadId, 256);
+    if (!lockedResult.member.followedThreads.includes(threadId)) {
+      lockedResult.member.followedThreads = [...lockedResult.member.followedThreads, threadId];
+    }
+    lockedResult.member.lastSeenAt = Date.now();
+    writeRoomState(state, stateFile);
+    return lockedResult;
+  }, options);
   const threadId = sanitizeMetadata(input.threadId, 256);
-  if (!result.member.followedThreads.includes(threadId)) {
-    result.member.followedThreads = [...result.member.followedThreads, threadId];
-  }
-  result.member.lastSeenAt = Date.now();
-  writeRoomState(state, stateFile);
   const event = appendRoomEvent({
     kind: "room.thread.followed",
     roomId: result.roomId,
@@ -1302,12 +1317,15 @@ function followRoomThread(input = {}, options = {}) {
 
 function setRoomNotifications(input = {}, options = {}) {
   const stateFile = options.stateFile || DEFAULT_PATHS.roomStateFile;
-  const state = readRoomState(stateFile);
-  const result = ensureRoomAndMember(state, input);
-  result.member.alertMode = normalizeRoomAlertMode(input.alertMode || result.member.alertMode);
-  if (input.dnd !== undefined) result.member.dnd = input.dnd === true;
-  result.member.lastSeenAt = Date.now();
-  writeRoomState(state, stateFile);
+  const result = withRoomStateLock(stateFile, () => {
+    const state = readRoomState(stateFile);
+    const lockedResult = ensureRoomAndMember(state, input);
+    lockedResult.member.alertMode = normalizeRoomAlertMode(input.alertMode || lockedResult.member.alertMode);
+    if (input.dnd !== undefined) lockedResult.member.dnd = input.dnd === true;
+    lockedResult.member.lastSeenAt = Date.now();
+    writeRoomState(state, stateFile);
+    return lockedResult;
+  }, options);
   const event = appendRoomEvent({
     kind: "room.notifications.updated",
     roomId: result.roomId,
@@ -1364,11 +1382,21 @@ function findRoomAlertSession(member = {}, sessions = []) {
     ? sessions.find((session) => Number(session.pid) === Number(member.sessionPid))
     : undefined;
   if (byPid) return byPid;
+
   const memberName = normalizeRoomMemberId(member.displayName || member.memberId);
-  return sessions.find((session) => {
-    if (member.sessionCwd && session.cwd === member.sessionCwd) return true;
-    return normalizeRoomMemberId(session.name) === memberName;
-  });
+  const nameMatches = sessions.filter((session) => normalizeRoomMemberId(session.name) === memberName);
+  if (nameMatches.length === 1) return nameMatches[0];
+  if (nameMatches.length > 1 && member.sessionCwd) {
+    const cwdNameMatches = nameMatches.filter((session) => session.cwd === member.sessionCwd);
+    if (cwdNameMatches.length === 1) return cwdNameMatches[0];
+  }
+
+  if (member.sessionCwd) {
+    const cwdMatches = sessions.filter((session) => session.cwd === member.sessionCwd);
+    if (cwdMatches.length === 1) return cwdMatches[0];
+  }
+
+  return undefined;
 }
 
 async function deliverRoomAlerts(event = {}, options = {}) {
@@ -1961,4 +1989,5 @@ module.exports = {
   writePidMetadata,
   writeRegistry,
   writeRoomState,
+  withRoomStateLock,
 };

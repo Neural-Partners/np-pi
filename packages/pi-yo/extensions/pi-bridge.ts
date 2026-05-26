@@ -747,7 +747,7 @@ export default function (pi: ExtensionAPI) {
 					notifyCommand(ctx, "Usage: /room follow <room> <threadId>", "warning");
 					return;
 				}
-				const followed = bridgeCore.followRoomThread({ room, name: myName, threadId });
+				const followed = bridgeCore.followRoomThread({ room, ...roomIdentity(ctx), threadId });
 				notifyCommand(ctx, `${followed.member.displayName} now follows ${threadId} in ${followed.room.roomId}.`, "success");
 				return;
 			}
@@ -766,7 +766,7 @@ export default function (pi: ExtensionAPI) {
 					notifyCommand(ctx, `${myName} room DND is ${member?.dnd ? "on" : "off"}.`, "info");
 					return;
 				}
-				const updated = bridgeCore.setRoomNotifications({ room, name: myName, dnd: mode === "on" });
+				const updated = bridgeCore.setRoomNotifications({ room, ...roomIdentity(ctx), dnd: mode === "on" });
 				notifyCommand(ctx, `${updated.member.displayName} DND is ${updated.member.dnd ? "on" : "off"}.`, "success");
 				return;
 			}
@@ -1138,7 +1138,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			currentCtx = ctx;
 			myName = getMyName(ctx);
-			const followed = bridgeCore.followRoomThread({ room: params.room, name: params.name || myName, threadId: params.threadId });
+			const followed = bridgeCore.followRoomThread({ room: params.room, ...roomIdentity(ctx, params.name), threadId: params.threadId });
 			return {
 				content: [{ type: "text", text: `${followed.member.displayName} now follows ${params.threadId} in ${followed.room.roomId}.` }],
 				details: followed,
@@ -1164,7 +1164,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			currentCtx = ctx;
 			myName = getMyName(ctx);
-			const updated = bridgeCore.setRoomNotifications({ room: params.room, name: params.name || myName, alertMode: params.alertMode, dnd: params.dnd });
+			const updated = bridgeCore.setRoomNotifications({ room: params.room, ...roomIdentity(ctx, params.name), alertMode: params.alertMode, dnd: params.dnd });
 			return {
 				content: [{ type: "text", text: `${updated.member.displayName} alerts=${updated.member.alertMode} dnd=${updated.member.dnd ? "on" : "off"}.` }],
 				details: updated,

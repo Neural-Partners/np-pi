@@ -1245,6 +1245,101 @@ function postRoomMessage(input = {}, options = {}) {
   return { room: memberResult.room, member: memberResult.member, event };
 }
 
+const ROOM_ALERT_MODES = Object.freeze(["mentions", "all", "digest", "off"]);
+
+function normalizeRoomAlertMode(value) {
+  return ROOM_ALERT_MODES.includes(value) ? value : "mentions";
+}
+
+function ensureRoomAndMember(state, input = {}) {
+  const roomId = normalizeRoomId(input.room || input.roomId);
+  const memberId = normalizeRoomMemberId(input.memberId || input.name);
+  const now = Date.now();
+  const room = state.rooms[roomId] || {
+    roomId,
+    title: roomId,
+    projectCwd: sanitizeMetadata(input.projectCwd || process.cwd(), 2048),
+    createdAt: now,
+    members: {},
+  };
+  if (!room.members || typeof room.members !== "object" || Array.isArray(room.members)) room.members = {};
+  const existing = room.members[memberId] || {};
+  const member = {
+    ...existing,
+    memberId,
+    displayName: existing.displayName || sanitizeMetadata(input.name || memberId, 200),
+    kind: normalizeRoomKind(input.kind || existing.kind),
+    alertMode: normalizeRoomAlertMode(input.alertMode || existing.alertMode),
+    dnd: existing.dnd === true,
+    followedThreads: Array.isArray(existing.followedThreads) ? existing.followedThreads : [],
+    joinedAt: existing.joinedAt || now,
+    lastSeenAt: now,
+  };
+  room.members[memberId] = member;
+  state.rooms[roomId] = room;
+  return { room, member, roomId, memberId };
+}
+
+function followRoomThread(input = {}, options = {}) {
+  const stateFile = options.stateFile || DEFAULT_PATHS.roomStateFile;
+  const state = readRoomState(stateFile);
+  const result = ensureRoomAndMember(state, input);
+  const threadId = sanitizeMetadata(input.threadId, 256);
+  if (!result.member.followedThreads.includes(threadId)) {
+    result.member.followedThreads = [...result.member.followedThreads, threadId];
+  }
+  result.member.lastSeenAt = Date.now();
+  writeRoomState(state, stateFile);
+  const event = appendRoomEvent({
+    kind: "room.thread.followed",
+    roomId: result.roomId,
+    threadId,
+    from: { memberId: result.member.memberId, displayName: result.member.displayName },
+    content: `${result.member.displayName} followed ${threadId}`,
+  }, options);
+  return { ...result, event };
+}
+
+function setRoomNotifications(input = {}, options = {}) {
+  const stateFile = options.stateFile || DEFAULT_PATHS.roomStateFile;
+  const state = readRoomState(stateFile);
+  const result = ensureRoomAndMember(state, input);
+  result.member.alertMode = normalizeRoomAlertMode(input.alertMode || result.member.alertMode);
+  if (input.dnd !== undefined) result.member.dnd = input.dnd === true;
+  result.member.lastSeenAt = Date.now();
+  writeRoomState(state, stateFile);
+  const event = appendRoomEvent({
+    kind: "room.notifications.updated",
+    roomId: result.roomId,
+    from: { memberId: result.member.memberId, displayName: result.member.displayName },
+    content: `${result.member.displayName} alerts=${result.member.alertMode} dnd=${result.member.dnd ? "on" : "off"}`,
+  }, options);
+  return { ...result, event };
+}
+
+function selectRoomAlertRecipients(state, event = {}) {
+  const room = state && state.rooms && state.rooms[normalizeRoomId(event.roomId || event.room)];
+  if (!room || !room.members || typeof room.members !== "object") return [];
+  const senderId = normalizeRoomMemberId(event.from && event.from.memberId);
+  const threadId = event.threadId ? sanitizeMetadata(event.threadId, 256) : "";
+  const mentions = new Set((event.mentions || []).map(normalizeRoomMemberId));
+  const assignments = new Set((event.assignments || []).map(normalizeRoomMemberId));
+
+  return Object.values(room.members).filter((member) => {
+    const memberId = normalizeRoomMemberId(member.memberId || member.displayName);
+    if (!memberId || memberId === senderId) return false;
+    const mode = normalizeRoomAlertMode(member.alertMode);
+    if (mode === "off") return false;
+    if (member.dnd === true && event.urgent !== true) return false;
+    if (mode === "all") return true;
+    const directlyMentioned = mentions.has(memberId);
+    const assigned = assignments.has(memberId);
+    const followsThread = threadId && Array.isArray(member.followedThreads) && member.followedThreads.includes(threadId);
+    if (mode === "digest") return event.urgent === true || assigned;
+    return directlyMentioned || assigned || followsThread || event.urgent === true;
+  });
+}
+
 const SESSION_STATUSES = Object.freeze(["idle", "working", "blocked", "review", "done", "unknown"]);
 
 function normalizeSessionStatus(value) {
@@ -1688,6 +1783,7 @@ module.exports = {
   formatInboxHookPayload,
   formatDuplicateMessageNotice,
   formatMailboxNotice,
+  followRoomThread,
   formatNoticeWithControls,
   formatShimDiagnostics,
   getFrontmostAppName,
@@ -1705,6 +1801,7 @@ module.exports = {
   normalizeBridgePolicy,
   normalizeBridgeVisibility,
   normalizeReaderKey,
+  normalizeRoomAlertMode,
   normalizeRoomId,
   normalizeRoomMemberId,
   normalizeSessionStatus,
@@ -1731,7 +1828,9 @@ module.exports = {
   safeRecordAcceptedBridgeMessage,
   sessionReaderKey,
   secureWriteFile,
+  selectRoomAlertRecipients,
   sendToSocket,
+  setRoomNotifications,
   setSessionVisibility,
   stateSessionKey,
   shouldFocusSession,

@@ -971,3 +971,85 @@ test("posting a room message appends thread-aware events with mentions and assig
   assert.deepEqual(posted.event.assignments, ["reviewer"]);
   assert.equal(core.readRoomEvents({ eventsFile: paths.roomEventsFile }).length, 2);
 });
+
+test("room notification defaults alert only mentions assignments followed threads and urgent", () => {
+  const state = {
+    schemaVersion: 1,
+    rooms: {
+      "np-pi": {
+        roomId: "np-pi",
+        title: "np-pi",
+        members: {
+          principal: { memberId: "principal", displayName: "principal", alertMode: "mentions", followedThreads: [], dnd: false },
+          worker: { memberId: "worker", displayName: "worker", alertMode: "mentions", followedThreads: ["thr_follow"], dnd: false },
+          muted: { memberId: "muted", displayName: "muted", alertMode: "off", followedThreads: ["thr_follow"], dnd: true },
+          firehose: { memberId: "firehose", displayName: "firehose", alertMode: "all", followedThreads: [], dnd: false },
+        },
+      },
+    },
+  };
+
+  const normal = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_root",
+    mentions: [],
+    assignments: [],
+    urgent: false,
+  });
+  assert.deepEqual(normal.map((r) => r.memberId), ["firehose"]);
+
+  const mention = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_root",
+    mentions: ["worker"],
+    assignments: [],
+    urgent: false,
+  });
+  assert.deepEqual(mention.map((r) => r.memberId), ["worker", "firehose"]);
+
+  const followed = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_follow",
+    mentions: [],
+    assignments: [],
+    urgent: false,
+  });
+  assert.deepEqual(followed.map((r) => r.memberId), ["worker", "firehose"]);
+
+  const urgent = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_other",
+    mentions: [],
+    assignments: [],
+    urgent: true,
+  });
+  assert.deepEqual(urgent.map((r) => r.memberId), ["worker", "firehose"]);
+});
+
+test("room members can follow threads and set notification preferences", () => {
+  const paths = core.buildPaths(tempHome());
+  core.joinRoom(
+    {
+      room: "np-pi",
+      name: "worker",
+      session: { pid: 2, name: "worker", cwd: "/repo" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+  core.followRoomThread(
+    { room: "np-pi", name: "worker", threadId: "thr_123" },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+  const prefs = core.setRoomNotifications(
+    { room: "np-pi", name: "worker", alertMode: "off", dnd: true },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.equal(prefs.member.alertMode, "off");
+  assert.equal(prefs.member.dnd, true);
+  assert.deepEqual(prefs.member.followedThreads, ["thr_123"]);
+});

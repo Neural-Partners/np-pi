@@ -1340,6 +1340,54 @@ function selectRoomAlertRecipients(state, event = {}) {
   });
 }
 
+function listRooms(options = {}) {
+  const state = readRoomState(options.stateFile || DEFAULT_PATHS.roomStateFile);
+  return Object.values(state.rooms || {}).sort((a, b) => String(a.roomId).localeCompare(String(b.roomId)));
+}
+
+function formatRoomTimestamp(value) {
+  const date = new Date(Number(value) || Date.now());
+  return date.toLocaleTimeString();
+}
+
+function formatRoomManagerSnapshot(room, options = {}) {
+  const roomId = normalizeRoomId(typeof room === "string" ? room : room && room.roomId);
+  const state = options.state || readRoomState(options.stateFile || DEFAULT_PATHS.roomStateFile);
+  const roomState = state.rooms[roomId];
+  if (!roomState) return `Room: ${roomId}\n\nNo room state found. Join with: piroom join ${roomId} --name <name>`;
+
+  const events = (options.events || readRoomEvents({ eventsFile: options.eventsFile || DEFAULT_PATHS.roomEventsFile }))
+    .filter((event) => normalizeRoomId(event.roomId) === roomId)
+    .slice(-(options.limit || 20));
+  const members = Object.values(roomState.members || {}).sort((a, b) => String(a.memberId).localeCompare(String(b.memberId)));
+  const lines = [
+    `Room: ${roomState.roomId}`,
+    `Project: ${sanitizeMetadata(roomState.projectCwd || "unknown", 2048)}`,
+    "",
+    "Members:",
+  ];
+
+  if (members.length === 0) lines.push("  (none)");
+  for (const member of members) {
+    const pid = member.sessionPid ? ` pid:${member.sessionPid}` : "";
+    const dnd = member.dnd ? " dnd:on" : " dnd:off";
+    const alertMode = normalizeRoomAlertMode(member.alertMode);
+    lines.push(`  - ${sanitizeMetadata(member.displayName || member.memberId, 200)} [${normalizeRoomKind(member.kind)}] alerts:${alertMode}${dnd}${pid}`);
+  }
+
+  lines.push("", "Recent:");
+  const messageEvents = events.filter((event) => event.kind === "room.message");
+  if (messageEvents.length === 0) lines.push("  (no messages)");
+  for (const event of messageEvents) {
+    const sender = sanitizeMetadata(event.from && (event.from.displayName || event.from.memberId), 200);
+    const urgent = event.urgent ? " !urgent" : "";
+    const thread = event.threadId ? ` thread:${sanitizeMetadata(event.threadId, 80)}` : "";
+    lines.push(`  [${formatRoomTimestamp(event.createdAt)}] ${sender}${urgent}${thread}: ${sanitizeMetadata(event.content || "", 2000)}`);
+  }
+
+  return lines.join("\n");
+}
+
 const SESSION_STATUSES = Object.freeze(["idle", "working", "blocked", "review", "done", "unknown"]);
 
 function normalizeSessionStatus(value) {
@@ -1781,6 +1829,7 @@ module.exports = {
   formatCandidateList,
   formatInboxEvents,
   formatInboxHookPayload,
+  formatRoomManagerSnapshot,
   formatDuplicateMessageNotice,
   formatMailboxNotice,
   followRoomThread,
@@ -1794,6 +1843,7 @@ module.exports = {
   isProcessAlive,
   isSessionVisible,
   joinRoom,
+  listRooms,
   maybeFocusSession,
   messageIdentityKey,
   newEventId,

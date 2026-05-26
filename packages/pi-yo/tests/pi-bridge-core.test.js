@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 
 const core = require("../lib/pi-bridge-core.js");
@@ -1052,4 +1053,41 @@ test("room members can follow threads and set notification preferences", () => {
   assert.equal(prefs.member.alertMode, "off");
   assert.equal(prefs.member.dnd, true);
   assert.deepEqual(prefs.member.followedThreads, ["thr_123"]);
+});
+
+test("piroom join post and manager --once render a local room", () => {
+  const home = tempHome();
+  const env = { ...process.env, HOME: home };
+  const piroom = path.join(__dirname, "..", "bin", "piroom");
+
+  let result = spawnSync(process.execPath, [piroom, "join", "np-pi", "--name", "principal"], {
+    cwd: "/tmp",
+    env,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /joined np-pi as principal/);
+
+  result = spawnSync(process.execPath, [piroom, "post", "np-pi", "hello @principal"], {
+    cwd: "/tmp",
+    env,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /posted to np-pi/);
+
+  result = spawnSync(process.execPath, [piroom, "manager", "np-pi", "--once"], {
+    cwd: "/tmp",
+    env,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Room: np-pi/);
+  assert.match(result.stdout, /principal/);
+  assert.match(result.stdout, /hello @principal/);
+});
+
+test("package exposes piroom bin", () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
+  assert.equal(packageJson.bin.piroom, "bin/piroom");
 });

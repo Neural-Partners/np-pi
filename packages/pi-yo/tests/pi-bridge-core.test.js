@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 
 const core = require("../lib/pi-bridge-core.js");
@@ -911,4 +912,317 @@ test("formatMailboxNotice explains close controls and mailbox clearing", () => {
   const empty = core.formatMailboxNotice("");
   assert.match(empty, /Bridge mailbox is empty/);
   assert.match(empty, /Controls:/);
+});
+
+test("room helpers normalize ids and register stable members", () => {
+  const paths = core.buildPaths(tempHome());
+  const joined = core.joinRoom(
+    {
+      room: "NP Pi Rooms!",
+      name: "Principal TL",
+      kind: "pi",
+      session: { pid: 123, name: "np-pi", cwd: "/repo/np-pi" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.equal(joined.room.roomId, "np-pi-rooms");
+  assert.equal(joined.member.memberId, "principal-tl");
+  assert.equal(joined.member.displayName, "Principal TL");
+  assert.equal(fileMode(paths.roomStateFile), 0o600);
+  assert.equal(fileMode(paths.roomEventsFile), 0o600);
+
+  const rejoined = core.joinRoom(
+    {
+      room: "np-pi-rooms",
+      name: "Principal TL",
+      kind: "pi",
+      session: { pid: 456, name: "np-pi renamed", cwd: "/repo/np-pi" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.equal(Object.keys(core.readRoomState(paths.roomStateFile).rooms["np-pi-rooms"].members).length, 1);
+  assert.equal(rejoined.member.sessionPid, 456);
+});
+
+test("room state mutations use a room-specific lock", () => {
+  const paths = core.buildPaths(tempHome());
+  core.ensureIpcDir(paths.ipcDir);
+  const lockFile = `${paths.roomStateFile}.lock`;
+  const fd = fs.openSync(lockFile, "wx", 0o600);
+
+  try {
+    assert.throws(
+      () => core.joinRoom(
+        { room: "np-pi", name: "blocked" },
+        {
+          stateFile: paths.roomStateFile,
+          eventsFile: paths.roomEventsFile,
+          lockTimeoutMs: 25,
+          lockRetryMs: 5,
+        },
+      ),
+      /Failed to acquire lock/,
+    );
+  } finally {
+    fs.closeSync(fd);
+    fs.unlinkSync(lockFile);
+  }
+
+  const joined = core.joinRoom(
+    { room: "np-pi", name: "principal" },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+  assert.equal(joined.member.memberId, "principal");
+});
+
+test("posting a room message appends thread-aware events with mentions and assignments", () => {
+  const paths = core.buildPaths(tempHome());
+  core.joinRoom(
+    {
+      room: "np-pi",
+      name: "principal",
+      session: { pid: 1, name: "principal", cwd: "/repo" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  const posted = core.postRoomMessage(
+    {
+      room: "np-pi",
+      from: { name: "principal", session: { pid: 1, name: "principal", cwd: "/repo" } },
+      content: "@worker please review !assign @reviewer",
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.match(posted.event.eventId, /^room_evt_/);
+  assert.match(posted.event.threadId, /^thr_/);
+  assert.deepEqual(posted.event.mentions, ["worker", "reviewer"]);
+  assert.deepEqual(posted.event.assignments, ["reviewer"]);
+  assert.equal(core.readRoomEvents({ eventsFile: paths.roomEventsFile }).length, 2);
+});
+
+test("room notification defaults alert only mentions assignments followed threads and urgent", () => {
+  const state = {
+    schemaVersion: 1,
+    rooms: {
+      "np-pi": {
+        roomId: "np-pi",
+        title: "np-pi",
+        members: {
+          principal: { memberId: "principal", displayName: "principal", alertMode: "mentions", followedThreads: [], dnd: false },
+          worker: { memberId: "worker", displayName: "worker", alertMode: "mentions", followedThreads: ["thr_follow"], dnd: false },
+          muted: { memberId: "muted", displayName: "muted", alertMode: "off", followedThreads: ["thr_follow"], dnd: true },
+          firehose: { memberId: "firehose", displayName: "firehose", alertMode: "all", followedThreads: [], dnd: false },
+        },
+      },
+    },
+  };
+
+  const normal = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_root",
+    mentions: [],
+    assignments: [],
+    urgent: false,
+  });
+  assert.deepEqual(normal.map((r) => r.memberId), ["firehose"]);
+
+  const mention = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_root",
+    mentions: ["worker"],
+    assignments: [],
+    urgent: false,
+  });
+  assert.deepEqual(mention.map((r) => r.memberId), ["worker", "firehose"]);
+
+  const followed = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_follow",
+    mentions: [],
+    assignments: [],
+    urgent: false,
+  });
+  assert.deepEqual(followed.map((r) => r.memberId), ["worker", "firehose"]);
+
+  const urgent = core.selectRoomAlertRecipients(state, {
+    roomId: "np-pi",
+    from: { memberId: "principal" },
+    threadId: "thr_other",
+    mentions: [],
+    assignments: [],
+    urgent: true,
+  });
+  assert.deepEqual(urgent.map((r) => r.memberId), ["worker", "firehose"]);
+});
+
+test("room members can follow threads and set notification preferences", () => {
+  const paths = core.buildPaths(tempHome());
+  core.joinRoom(
+    {
+      room: "np-pi",
+      name: "worker",
+      session: { pid: 2, name: "worker", cwd: "/repo" },
+    },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+  core.followRoomThread(
+    { room: "np-pi", name: "worker", threadId: "thr_123" },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+  const prefs = core.setRoomNotifications(
+    { room: "np-pi", name: "worker", alertMode: "off", dnd: true },
+    { stateFile: paths.roomStateFile, eventsFile: paths.roomEventsFile },
+  );
+
+  assert.equal(prefs.member.alertMode, "off");
+  assert.equal(prefs.member.dnd, true);
+  assert.deepEqual(prefs.member.followedThreads, ["thr_123"]);
+});
+
+test("deliverRoomAlerts sends only selected recipients through bridge sockets", async () => {
+  const state = {
+    schemaVersion: 1,
+    rooms: {
+      "np-pi": {
+        roomId: "np-pi",
+        title: "np-pi",
+        projectCwd: "/repo/np-pi",
+        members: {
+          principal: { memberId: "principal", displayName: "principal", sessionPid: 111, alertMode: "mentions", followedThreads: [], dnd: false },
+          worker: { memberId: "worker", displayName: "worker", sessionPid: 222, alertMode: "mentions", followedThreads: [], dnd: false },
+          observer: { memberId: "observer", displayName: "observer", sessionPid: 333, alertMode: "mentions", followedThreads: [], dnd: false },
+        },
+      },
+    },
+  };
+  const event = {
+    roomId: "np-pi",
+    threadId: "thr_1",
+    from: { memberId: "principal", displayName: "principal" },
+    content: "@worker please review",
+    mentions: ["worker"],
+    assignments: [],
+    urgent: false,
+  };
+  const sent = [];
+
+  const result = await core.deliverRoomAlerts(event, {
+    state,
+    sessions: [
+      { pid: 222, name: "worker", cwd: "/repo/np-pi", socketPath: "/tmp/222.sock", startedAt: 1 },
+      { pid: 333, name: "observer", cwd: "/repo/np-pi", socketPath: "/tmp/333.sock", startedAt: 1 },
+    ],
+    sendToSocket: async (socketPath, message) => {
+      sent.push({ socketPath, message });
+      return { acked: true, response: { type: "ack" } };
+    },
+  });
+
+  assert.deepEqual(sent.map((item) => item.socketPath), ["/tmp/222.sock"]);
+  assert.match(sent[0].message.content, /\[piroom:np-pi\]/);
+  assert.match(sent[0].message.content, /@worker please review/);
+  assert.equal(result.deliveries[0].member.memberId, "worker");
+  assert.equal(result.skipped.length, 0);
+});
+
+test("deliverRoomAlerts refuses ambiguous same-cwd fallback", async () => {
+  const state = {
+    schemaVersion: 1,
+    rooms: {
+      "np-pi": {
+        roomId: "np-pi",
+        title: "np-pi",
+        projectCwd: "/repo/np-pi",
+        members: {
+          principal: { memberId: "principal", displayName: "principal", sessionPid: 111, alertMode: "mentions", followedThreads: [], dnd: false },
+          worker: { memberId: "worker", displayName: "worker", sessionPid: 999, sessionCwd: "/repo/np-pi", alertMode: "mentions", followedThreads: [], dnd: false },
+        },
+      },
+    },
+  };
+  const event = {
+    roomId: "np-pi",
+    threadId: "thr_1",
+    from: { memberId: "principal", displayName: "principal" },
+    content: "@worker please review",
+    mentions: ["worker"],
+    assignments: [],
+    urgent: false,
+  };
+  const sendToSocket = async () => {
+    throw new Error("should not send to ambiguous cwd match");
+  };
+
+  const ambiguous = await core.deliverRoomAlerts(event, {
+    state,
+    sessions: [
+      { pid: 222, name: "other", cwd: "/repo/np-pi", socketPath: "/tmp/222.sock", startedAt: 1 },
+      { pid: 333, name: "observer", cwd: "/repo/np-pi", socketPath: "/tmp/333.sock", startedAt: 1 },
+    ],
+    sendToSocket,
+  });
+
+  assert.equal(ambiguous.deliveries.length, 0);
+  assert.equal(ambiguous.skipped.length, 1);
+  assert.match(ambiguous.skipped[0].reason, /no active bridge session/);
+
+  const sent = [];
+  const named = await core.deliverRoomAlerts(event, {
+    state,
+    sessions: [
+      { pid: 222, name: "worker", cwd: "/repo/np-pi", socketPath: "/tmp/222.sock", startedAt: 1 },
+      { pid: 333, name: "observer", cwd: "/repo/np-pi", socketPath: "/tmp/333.sock", startedAt: 1 },
+    ],
+    sendToSocket: async (socketPath, message) => {
+      sent.push({ socketPath, message });
+      return { acked: true, response: { type: "ack" } };
+    },
+  });
+
+  assert.deepEqual(sent.map((item) => item.socketPath), ["/tmp/222.sock"]);
+  assert.equal(named.deliveries.length, 1);
+});
+
+test("piroom join post and manager --once render a local room", () => {
+  const home = tempHome();
+  const env = { ...process.env, HOME: home };
+  const piroom = path.join(__dirname, "..", "bin", "piroom");
+
+  let result = spawnSync(process.execPath, [piroom, "join", "np-pi", "--name", "principal"], {
+    cwd: "/tmp",
+    env,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /joined np-pi as principal/);
+
+  result = spawnSync(process.execPath, [piroom, "post", "np-pi", "hello @principal"], {
+    cwd: "/tmp",
+    env,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /posted to np-pi/);
+
+  result = spawnSync(process.execPath, [piroom, "manager", "np-pi", "--once"], {
+    cwd: "/tmp",
+    env,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Room: np-pi/);
+  assert.match(result.stdout, /principal/);
+  assert.match(result.stdout, /hello @principal/);
+});
+
+test("package exposes piroom bin", () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
+  assert.equal(packageJson.bin.piroom, "bin/piroom");
 });

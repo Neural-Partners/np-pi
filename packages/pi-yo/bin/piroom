@@ -1,0 +1,175 @@
+#!/usr/bin/env node
+/**
+ * piroom — local-first project chatrooms for pi-yo
+ */
+
+"use strict";
+
+const path = require("node:path");
+const core = require("../lib/pi-bridge-core.js");
+
+function die(message, code = 1) {
+  process.stderr.write(`${message}\n`);
+  process.exit(code);
+}
+
+function printHelp() {
+  console.log([
+    "Usage:",
+    "  piroom join <room> --name <name> [--kind pi|cc|human]",
+    "  piroom post <room> <message...> [--name <name>] [--thread <threadId>] [--urgent]",
+    "  piroom follow <room> <threadId> --name <name>",
+    "  piroom dnd <room> on|off|status --name <name>",
+    "  piroom list",
+    "  piroom manager <room> [--once] [--interval <ms>]",
+    "",
+    "Default alerts are mention/thread/assignment only; normal chatter stays in the room log.",
+  ].join("\n"));
+}
+
+function takeFlag(args, name) {
+  const index = args.indexOf(name);
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  args.splice(index, value === undefined || value.startsWith("--") ? 1 : 2);
+  return value === undefined || value.startsWith("--") ? "" : value;
+}
+
+function hasFlag(args, name) {
+  const index = args.indexOf(name);
+  if (index < 0) return false;
+  args.splice(index, 1);
+  return true;
+}
+
+function defaultName() {
+  return process.env.PIROOM_NAME || path.basename(process.cwd()) || "human";
+}
+
+function sessionFor(name) {
+  return {
+    pid: process.pid,
+    name,
+    cwd: process.cwd(),
+  };
+}
+
+function cmdJoin(args) {
+  const room = args.shift();
+  const name = takeFlag(args, "--name") || defaultName();
+  const kind = takeFlag(args, "--kind") || "human";
+  if (!room) die("Usage: piroom join <room> --name <name>");
+  const joined = core.joinRoom({ room, name, kind, session: sessionFor(name) });
+  console.log(`joined ${joined.room.roomId} as ${joined.member.displayName}`);
+}
+
+async function cmdPost(args) {
+  const room = args.shift();
+  const name = takeFlag(args, "--name") || defaultName();
+  const threadId = takeFlag(args, "--thread");
+  const urgent = hasFlag(args, "--urgent");
+  const content = args.join(" ").trim();
+  if (!room || !content) die("Usage: piroom post <room> <message...> [--name <name>] [--thread <threadId>] [--urgent]");
+  const posted = core.postRoomMessage({
+    room,
+    from: { name, kind: "human", session: sessionFor(name) },
+    threadId,
+    urgent,
+    content,
+  });
+  const alerts = await core.deliverRoomAlerts(posted.event);
+  const delivered = alerts.deliveries.length;
+  const skipped = alerts.skipped.length;
+  const suffix = delivered || skipped ? ` alerts delivered:${delivered} skipped:${skipped}` : "";
+  console.log(`posted to ${posted.event.roomId} thread ${posted.event.threadId}${suffix}`);
+}
+
+function cmdFollow(args) {
+  const room = args.shift();
+  const threadId = args.shift();
+  const name = takeFlag(args, "--name") || defaultName();
+  if (!room || !threadId) die("Usage: piroom follow <room> <threadId> --name <name>");
+  const followed = core.followRoomThread({ room, name, threadId });
+  console.log(`${followed.member.displayName} follows ${threadId} in ${followed.room.roomId}`);
+}
+
+function cmdDnd(args) {
+  const room = args.shift();
+  const action = args.shift() || "status";
+  const name = takeFlag(args, "--name") || defaultName();
+  if (!room) die("Usage: piroom dnd <room> on|off|status --name <name>");
+  if (action === "status") {
+    const state = core.readRoomState();
+    const roomState = state.rooms[core.normalizeRoomId(room)];
+    const member = roomState && roomState.members && roomState.members[core.normalizeRoomMemberId(name)];
+    console.log(`${name} dnd:${member && member.dnd ? "on" : "off"}`);
+    return;
+  }
+  if (action !== "on" && action !== "off") die("Usage: piroom dnd <room> on|off|status --name <name>");
+  const updated = core.setRoomNotifications({ room, name, dnd: action === "on" });
+  console.log(`${updated.member.displayName} dnd:${updated.member.dnd ? "on" : "off"}`);
+}
+
+function cmdList() {
+  const rooms = core.listRooms();
+  if (rooms.length === 0) {
+    console.log("No local rooms. Join with: piroom join <room> --name <name>");
+    return;
+  }
+  for (const room of rooms) {
+    const members = Object.keys(room.members || {}).length;
+    console.log(`${room.roomId}  members:${members}  project:${room.projectCwd || "unknown"}`);
+  }
+}
+
+function renderManager(room) {
+  process.stdout.write(core.formatRoomManagerSnapshot(room) + "\n");
+}
+
+function cmdManager(args) {
+  const room = args.shift();
+  const once = hasFlag(args, "--once");
+  const interval = Number.parseInt(takeFlag(args, "--interval") || "2000", 10);
+  if (!room) die("Usage: piroom manager <room> [--once] [--interval <ms>]");
+  if (once) {
+    renderManager(room);
+    return;
+  }
+  const tick = () => {
+    process.stdout.write("\x1bc");
+    renderManager(room);
+    process.stdout.write("\nq/Ctrl+C to quit • refreshes automatically\n");
+  };
+  tick();
+  const timer = setInterval(tick, Number.isSafeInteger(interval) && interval > 250 ? interval : 2000);
+  process.stdin.setRawMode?.(true);
+  process.stdin.resume();
+  process.stdin.on("data", (chunk) => {
+    const text = String(chunk);
+    if (text === "q" || text === "\u0003") {
+      clearInterval(timer);
+      process.exit(0);
+    }
+  });
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const command = args.shift();
+  if (!command || command === "--help" || command === "-h") {
+    printHelp();
+    return;
+  }
+  switch (command) {
+    case "join": return cmdJoin(args);
+    case "post": return cmdPost(args);
+    case "follow": return cmdFollow(args);
+    case "dnd": return cmdDnd(args);
+    case "list": return cmdList(args);
+    case "manager": return cmdManager(args);
+    default:
+      die(`Unknown command: ${command}\nRun: piroom --help`);
+  }
+}
+
+main().catch((err) => die(err && err.stack ? err.stack : String(err)));

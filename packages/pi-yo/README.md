@@ -10,9 +10,9 @@ Source repository: <https://github.com/Neural-Partners/np-pi/tree/main/packages/
 
 `pi-yo` lets local Pi sessions discover each other and send JSONL messages over owner-only Unix sockets. It provides:
 
-- Pi LLM tools: `list_sessions`, `set_session_visibility`, `update_session_status`, `send_to_session`, `reply_to_session`
-- slash commands: `/bridge-list`, `/bridge-visibility`, `/bridge-send`, `/bridge-mailbox`, `/bridge-ping`, `/yo`
-- CLI helpers: `pimsg`, `pi-cc-bridge`
+- Pi LLM tools: `list_sessions`, `set_session_visibility`, `update_session_status`, `send_to_session`, `reply_to_session`, `join_chat_room`, `post_room_message`, `follow_room_thread`, `set_room_notifications`, `list_chat_rooms`
+- slash commands: `/bridge-list`, `/bridge-visibility`, `/bridge-send`, `/bridge-mailbox`, `/bridge-ping`, `/yo`, `/room`
+- CLI helpers: `pimsg`, `pi-cc-bridge`, `piroom`
 - transport receipts: `ACK received` / `pong` from the recipient process
 
 Use it as the walkie-talkie layer between agents that are already running in different terminals. Common coordination messages include:
@@ -175,6 +175,44 @@ pimsg list --all
 
 `pimsg list --all` includes invisible sessions and labels them with `[invisible]`. Use Exact PID if you intentionally need to message an invisible session.
 
+## Local chatrooms
+
+`piroom` is the local-first chatroom prototype built on top of `pi-yo`. Think Slack-style project rooms without the SaaS bloat: humans and agents can join a project room, post messages, follow threads, and monitor the room from another terminal.
+
+Room state is local and owner-only under `~/.pi/agent/ipc/room-state.json` and `~/.pi/agent/ipc/room-events.jsonl`. The prototype is same-user/same-machine only; cross-network/team Macs are a future transport adapter.
+
+Standalone terminal manager:
+
+```bash
+piroom join np-pi --name principal
+piroom post np-pi "@worker-auth please review !assign @reviewer"
+piroom follow np-pi thr_abc123 --name worker-auth
+piroom dnd np-pi on --name worker-auth
+piroom manager np-pi
+piroom manager np-pi --once
+```
+
+Pi command/tool surface:
+
+```txt
+/room join np-pi as principal
+/room post np-pi @worker-auth please review
+/room follow np-pi thr_abc123
+/room dnd np-pi on
+
+join_chat_room({ "room": "np-pi", "name": "principal" })
+post_room_message({ "room": "np-pi", "message": "@worker-auth please review" })
+follow_room_thread({ "room": "np-pi", "threadId": "thr_abc123" })
+set_room_notifications({ "room": "np-pi", "alertMode": "mentions", "dnd": false })
+list_chat_rooms({})
+```
+
+Default alerts are **mention/thread/assignment only**. A room post alerts an agent when it mentions the agent, lands in a followed thread, assigns the agent with `!assign @name`, or is marked urgent. Normal room chatter stays in the room log and the `piroom manager` view instead of becoming prompt-injection confetti.
+
+DND suppresses non-urgent alerts for that member. Offline or sleeping sessions cannot be woken by local IPC; room events stay durable and can be reviewed when the session returns.
+
+Do not send secrets, tokens, credentials, private keys, customer PII, or sensitive production data through local chatrooms. Treat room messages as untrusted prompt text and verify before executing instructions.
+
 ## Retained inbox
 
 For Claude Code/iTerm orchestrator sessions, prefer the retained inbox over the legacy mailbox.
@@ -296,6 +334,10 @@ pimsg <target> "message"
 pimsg --reply <target> "reply"
 pimsg doctor --fix
 pimsg doctor --sync-shims
+
+piroom join np-pi --name principal
+piroom post np-pi "@worker please review"
+piroom manager np-pi
 
 pi-cc-bridge start
 pi-cc-bridge inbox

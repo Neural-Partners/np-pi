@@ -1,6 +1,6 @@
 {
   "name": "@neuralpartners/pi-yo",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Inter-terminal messaging for Pi agents and Claude Code sessions.",
   "keywords": [
     "pi-package",
@@ -12,7 +12,8 @@
   "license": "MIT",
   "bin": {
     "pimsg": "bin/pimsg",
-    "pi-cc-bridge": "bin/pi-cc-bridge"
+    "pi-cc-bridge": "bin/pi-cc-bridge",
+    "piroom": "bin/piroom"
   },
   "pi": {
     "extensions": [
@@ -29,7 +30,7 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "syntax": "node -c lib/pi-bridge-core.js && node -c bin/pimsg && node -c bin/pi-cc-bridge && tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --strict --esModuleInterop extensions/pi-bridge.ts",
+    "syntax": "node -c lib/pi-bridge-core.js && node -c bin/pimsg && node -c bin/pi-cc-bridge && node -c bin/piroom && tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck --strict --esModuleInterop extensions/pi-bridge.ts",
     "verify": "npm run test && npm run syntax"
   },
   "publishConfig": {

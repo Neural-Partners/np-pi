@@ -858,6 +858,7 @@ test("diagnoseShimVersions reports stale local shim hashes", () => {
   fs.mkdirSync(path.join(localRoot, "lib"), { recursive: true });
   fs.writeFileSync(path.join(packageRoot, "bin", "pimsg"), "same");
   fs.writeFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "pkg");
+  fs.writeFileSync(path.join(packageRoot, "bin", "piroom"), "room-new");
   fs.writeFileSync(path.join(packageRoot, "lib", "pi-bridge-core.js"), "core-new");
   fs.writeFileSync(path.join(localRoot, "bin", "pimsg"), "same");
   fs.writeFileSync(path.join(localRoot, "bin", "pi-cc-bridge"), "old");
@@ -871,8 +872,32 @@ test("diagnoseShimVersions reports stale local shim hashes", () => {
     .filter((file) => file.status === "stale")
     .map((file) => file.name)
     .sort();
+  const missing = result.files
+    .filter((file) => file.status === "missing")
+    .map((file) => file.name)
+    .sort();
   assert.deepEqual(stale, ["lib/pi-bridge-core.js", "pi-cc-bridge"]);
+  assert.deepEqual(missing, ["piroom"]);
+  assert.match(core.formatShimDiagnostics(result), /piroom: missing/);
   assert.equal(result.ok, false);
+});
+
+test("syncLocalShims installs piroom with executable permissions", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shim-sync-"));
+  const packageRoot = path.join(dir, "pkg");
+  const localRoot = path.join(dir, "agent");
+  fs.mkdirSync(path.join(packageRoot, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "lib"), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, "bin", "pimsg"), "pimsg");
+  fs.writeFileSync(path.join(packageRoot, "bin", "pi-cc-bridge"), "cc");
+  fs.writeFileSync(path.join(packageRoot, "bin", "piroom"), "room");
+  fs.writeFileSync(path.join(packageRoot, "lib", "pi-bridge-core.js"), "core");
+
+  const result = core.syncLocalShims({ packageRoot, agentRoot: localRoot });
+
+  assert.equal(result.ok, true);
+  assert.equal(fs.readFileSync(path.join(localRoot, "bin", "piroom"), "utf-8"), "room");
+  assert.equal(fileMode(path.join(localRoot, "bin", "piroom")), 0o755);
 });
 
 test("doctorIpcPermissions reports bridge-owned ipc symlink entries", () => {

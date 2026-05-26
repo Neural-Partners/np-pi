@@ -43,18 +43,36 @@ Prefer the GitHub CLI or existing SSH credentials for normal git operations. Use
 
 ## Manual npm publish checklist
 
-Run from the package directory, not the repo root:
+Publish only from a clean worktree created from the intended `origin/main` commit/tag. Do not publish from the primary checkout when it is behind or dirty.
+
+Run from the repo root first:
+
+```bash
+npm install
+npm run verify
+npm pack --workspace <package-name> --dry-run
+```
+
+Then run package-specific smoke tests when present:
+
+```bash
+npm run smoke:rooms --workspace @neuralpartners/pi-yo
+```
+
+Publish from the package directory only after the checks above pass:
 
 ```bash
 cd packages/<package-name>
-npm run verify
 npm publish --access public
 ```
 
 Before publishing:
 
 - confirm `package.json` has the intended `name`, `version`, `license`, `repository`, and `publishConfig`
-- confirm the package README has install and verification instructions
+- confirm npm does not already have that version: `npm view <package-name> version versions --json`
+- confirm the package README has install, local-path testing, rollback, and verification instructions
+- confirm any documented CLI bins are included in `package.json#bin` and in shim diagnostics/sync docs when applicable
+- confirm package-specific smoke commands are documented and pass from a temporary `HOME` when they write local state
 - confirm `npm pack --dry-run` does not include private files
 - confirm the package's license is intentional
 

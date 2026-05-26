@@ -64,6 +64,8 @@ Rules of thumb:
 - keep test-only tools in `devDependencies`
 - list Pi-provided APIs as peer dependencies when imported by the extension
 - test core logic outside Pi interactive mode when possible
+- document source-checkout vs installed-package commands when a package exposes CLI bins; npm latest can lag `origin/main`
+- provide package smoke scripts for local-first stateful features, and make them use a temporary `HOME` unless they intentionally mutate real Pi state
 
 Common peer dependencies for Pi extension packages:
 

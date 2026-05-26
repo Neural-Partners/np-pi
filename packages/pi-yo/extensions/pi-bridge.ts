@@ -735,7 +735,8 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				const posted = bridgeCore.postRoomMessage({ room, from: roomIdentity(ctx), content });
-				notifyCommand(ctx, `Posted to ${posted.event.roomId} thread ${posted.event.threadId}.`, "success", "Room posts are logged locally; only mentions/followed threads/assignments alert agents by default.");
+				const alerts = await bridgeCore.deliverRoomAlerts(posted.event);
+				notifyCommand(ctx, `Posted to ${posted.event.roomId} thread ${posted.event.threadId}. Alerts delivered:${alerts.deliveries.length} skipped:${alerts.skipped.length}.`, "success", "Room posts are logged locally; only mentions/followed threads/assignments alert agents by default.");
 				return;
 			}
 
@@ -1115,9 +1116,10 @@ export default function (pi: ExtensionAPI) {
 				threadId: params.threadId,
 				urgent: params.urgent === true,
 			});
+			const alerts = await bridgeCore.deliverRoomAlerts(posted.event);
 			return {
-				content: [{ type: "text", text: `Posted to ${posted.event.roomId} thread ${posted.event.threadId}.` }],
-				details: posted,
+				content: [{ type: "text", text: `Posted to ${posted.event.roomId} thread ${posted.event.threadId}. Alerts delivered:${alerts.deliveries.length} skipped:${alerts.skipped.length}.` }],
+				details: { ...posted, alerts },
 			};
 		},
 	});

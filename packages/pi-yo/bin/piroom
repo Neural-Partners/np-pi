@@ -63,7 +63,7 @@ function cmdJoin(args) {
   console.log(`joined ${joined.room.roomId} as ${joined.member.displayName}`);
 }
 
-function cmdPost(args) {
+async function cmdPost(args) {
   const room = args.shift();
   const name = takeFlag(args, "--name") || defaultName();
   const threadId = takeFlag(args, "--thread");
@@ -77,7 +77,11 @@ function cmdPost(args) {
     urgent,
     content,
   });
-  console.log(`posted to ${posted.event.roomId} thread ${posted.event.threadId}`);
+  const alerts = await core.deliverRoomAlerts(posted.event);
+  const delivered = alerts.deliveries.length;
+  const skipped = alerts.skipped.length;
+  const suffix = delivered || skipped ? ` alerts delivered:${delivered} skipped:${skipped}` : "";
+  console.log(`posted to ${posted.event.roomId} thread ${posted.event.threadId}${suffix}`);
 }
 
 function cmdFollow(args) {
@@ -149,7 +153,7 @@ function cmdManager(args) {
   });
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const command = args.shift();
   if (!command || command === "--help" || command === "-h") {
@@ -168,4 +172,4 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => die(err && err.stack ? err.stack : String(err)));

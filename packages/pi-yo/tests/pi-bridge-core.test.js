@@ -1055,6 +1055,52 @@ test("room members can follow threads and set notification preferences", () => {
   assert.deepEqual(prefs.member.followedThreads, ["thr_123"]);
 });
 
+test("deliverRoomAlerts sends only selected recipients through bridge sockets", async () => {
+  const state = {
+    schemaVersion: 1,
+    rooms: {
+      "np-pi": {
+        roomId: "np-pi",
+        title: "np-pi",
+        projectCwd: "/repo/np-pi",
+        members: {
+          principal: { memberId: "principal", displayName: "principal", sessionPid: 111, alertMode: "mentions", followedThreads: [], dnd: false },
+          worker: { memberId: "worker", displayName: "worker", sessionPid: 222, alertMode: "mentions", followedThreads: [], dnd: false },
+          observer: { memberId: "observer", displayName: "observer", sessionPid: 333, alertMode: "mentions", followedThreads: [], dnd: false },
+        },
+      },
+    },
+  };
+  const event = {
+    roomId: "np-pi",
+    threadId: "thr_1",
+    from: { memberId: "principal", displayName: "principal" },
+    content: "@worker please review",
+    mentions: ["worker"],
+    assignments: [],
+    urgent: false,
+  };
+  const sent = [];
+
+  const result = await core.deliverRoomAlerts(event, {
+    state,
+    sessions: [
+      { pid: 222, name: "worker", cwd: "/repo/np-pi", socketPath: "/tmp/222.sock", startedAt: 1 },
+      { pid: 333, name: "observer", cwd: "/repo/np-pi", socketPath: "/tmp/333.sock", startedAt: 1 },
+    ],
+    sendToSocket: async (socketPath, message) => {
+      sent.push({ socketPath, message });
+      return { acked: true, response: { type: "ack" } };
+    },
+  });
+
+  assert.deepEqual(sent.map((item) => item.socketPath), ["/tmp/222.sock"]);
+  assert.match(sent[0].message.content, /\[piroom:np-pi\]/);
+  assert.match(sent[0].message.content, /@worker please review/);
+  assert.equal(result.deliveries[0].member.memberId, "worker");
+  assert.equal(result.skipped.length, 0);
+});
+
 test("piroom join post and manager --once render a local room", () => {
   const home = tempHome();
   const env = { ...process.env, HOME: home };

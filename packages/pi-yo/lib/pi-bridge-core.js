@@ -1663,6 +1663,11 @@ function diagnoseShimVersions(options = {}) {
       localPath: path.join(agentRoot, "bin", "pi-cc-bridge"),
     },
     {
+      name: "piroom",
+      packagePath: path.join(packageRoot, "bin", "piroom"),
+      localPath: path.join(agentRoot, "bin", "piroom"),
+    },
+    {
       name: "lib/pi-bridge-core.js",
       packagePath: path.join(packageRoot, "lib", "pi-bridge-core.js"),
       localPath: path.join(agentRoot, "lib", "pi-bridge-core.js"),

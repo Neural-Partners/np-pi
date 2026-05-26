@@ -181,28 +181,75 @@ pimsg list --all
 
 Room state is local and owner-only under `~/.pi/agent/ipc/room-state.json` and `~/.pi/agent/ipc/room-events.jsonl`. The prototype is same-user/same-machine only; cross-network/team Macs are a future transport adapter.
 
-Standalone terminal manager:
+### Source checkout vs installed package
+
+`piroom` exists in `@neuralpartners/pi-yo@0.4.0+`. If npm latest may lag main, `piroom` will not exist after installing the older npm package. Check first:
+
+```bash
+npm view @neuralpartners/pi-yo version
+node -p 'require("./packages/pi-yo/package.json").version'
+```
+
+If the source checkout is newer than npm, test from the source checkout or install the local package path. Do not expect commands from the primary repo checkout to work if that checkout is behind `origin/main` and does not contain `packages/pi-yo/bin/piroom`.
+
+Safe source smoke test with a temporary `HOME` that does not touch real Pi state:
+
+```bash
+cd /absolute/path/to/np-pi
+npm install
+npm run smoke:rooms --workspace @neuralpartners/pi-yo
+```
+
+Expected output:
+
+```txt
+piroom smoke passed
+temporary HOME: /tmp/piroom-smoke-...
+```
+
+Local package install for manual testing before npm publish:
+
+```bash
+cd /absolute/path/to/np-pi
+npm install -g /absolute/path/to/np-pi/packages/pi-yo
+pimsg doctor --sync-shims
+piroom --help
+```
+
+`pimsg doctor --sync-shims` copies `pimsg`, `pi-cc-bridge`, `piroom`, and `lib/pi-bridge-core.js` into `~/.pi/agent` when they are stale or missing.
+
+Rollback to the published package if needed:
+
+```bash
+npm install -g @neuralpartners/pi-yo@0.3.0
+pimsg doctor --sync-shims
+```
+
+### Standalone terminal manager
 
 ```bash
 piroom join np-pi --name principal
-piroom post np-pi "@worker-auth please review !assign @reviewer"
-piroom follow np-pi thr_abc123 --name worker-auth
+piroom join np-pi --name worker-auth --kind pi
+piroom post np-pi "@worker-auth please review !assign @worker-auth"
+piroom follow np-pi <thread-id-from-post-output> --name worker-auth
 piroom dnd np-pi on --name worker-auth
 piroom manager np-pi
 piroom manager np-pi --once
 ```
 
-Pi command/tool surface:
+`piroom post` prints the created thread id. Use that exact id for `piroom follow`; placeholder ids like `thr_abc123` are examples only.
+
+### Pi command/tool surface
 
 ```txt
 /room join np-pi as principal
 /room post np-pi @worker-auth please review
-/room follow np-pi thr_abc123
+/room follow np-pi <thread-id-from-post-output>
 /room dnd np-pi on
 
 join_chat_room({ "room": "np-pi", "name": "principal" })
 post_room_message({ "room": "np-pi", "message": "@worker-auth please review" })
-follow_room_thread({ "room": "np-pi", "threadId": "thr_abc123" })
+follow_room_thread({ "room": "np-pi", "threadId": "thr_..." })
 set_room_notifications({ "room": "np-pi", "alertMode": "mentions", "dnd": false })
 list_chat_rooms({})
 ```
@@ -281,7 +328,7 @@ pimsg doctor
 pimsg doctor --sync-shims
 ```
 
-`--sync-shims` copies the installed package's `pimsg`, `pi-cc-bridge`, and `pi-bridge-core.js` into `~/.pi/agent`. It is never run automatically.
+`--sync-shims` copies the installed package's `pimsg`, `pi-cc-bridge`, `piroom`, and `pi-bridge-core.js` into `~/.pi/agent`. It is never run automatically.
 
 ## Install
 
@@ -291,10 +338,17 @@ From Pi:
 pi install npm:@neuralpartners/pi-yo
 ```
 
-For local development, run temporarily:
+For local development of the Pi extension only, run temporarily:
 
 ```bash
 pi -e ./packages/pi-yo/extensions/pi-bridge.ts
+```
+
+For local development of the package CLI bins (`pimsg`, `pi-cc-bridge`, `piroom`), install the package path:
+
+```bash
+npm install -g /absolute/path/to/np-pi/packages/pi-yo
+pimsg doctor --sync-shims
 ```
 
 ## Configuration

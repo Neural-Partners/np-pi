@@ -41,6 +41,8 @@ Use local chatrooms when the user wants Slack-style project coordination between
 
 Tools and commands:
 
+- Do not tell the user to run piroom unless the installed package version includes the piroom bin (`@neuralpartners/pi-yo@0.4.0+`) or they are inside a source checkout that contains `packages/pi-yo/bin/piroom`.
+- For unpublished/local testing, prefer the package smoke command: `npm run smoke:rooms --workspace @neuralpartners/pi-yo`.
 - `join_chat_room` registers this agent in a project room with a stable display name.
 - `post_room_message` posts to a local room; use it only when room coordination is useful.
 - `follow_room_thread` subscribes this agent to future replies in a specific thread.
